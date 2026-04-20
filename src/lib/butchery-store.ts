@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { Product, Sale, StockEntry, todayISO } from "./butchery-types";
+import {
+  Product,
+  PurchaseOrder,
+  Sale,
+  StockEntry,
+  todayISO,
+} from "./butchery-types";
 
 const KEYS = {
   products: "butchery.products.v1",
   stock: "butchery.stock.v1",
-  sales: "butchery.sales.v1",
+  sales: "butchery.sales.v2",
+  purchases: "butchery.purchases.v1",
+  receiptCounter: "butchery.receiptCounter.v1",
 };
 
 function read<T>(key: string, fallback: T): T {
@@ -97,23 +105,76 @@ export function useStock(date: string = todayISO()) {
   return { entries, setOpening, getOpening };
 }
 
-export function useSales(date?: string) {
-  const [sales, setSales] = useStored<Sale[]>(KEYS.sales, []);
+export function usePurchases(date?: string) {
+  const [purchases, setPurchases] = useStored<PurchaseOrder[]>(KEYS.purchases, []);
+  const filtered = date ? purchases.filter((p) => p.date === date) : purchases;
 
-  const filtered = date ? sales.filter((s) => s.date === date) : sales;
-
-  const add = (s: Omit<Sale, "id" | "timestamp" | "date">) => {
-    const sale: Sale = {
-      ...s,
+  const add = (po: Omit<PurchaseOrder, "id" | "timestamp" | "date" | "totalCost">) => {
+    const totalCost = po.quantity * po.costPerUnit;
+    const next: PurchaseOrder = {
+      ...po,
       id: uid(),
       timestamp: Date.now(),
       date: todayISO(),
+      totalCost,
+    };
+    setPurchases((prev) => [next, ...prev]);
+    return next;
+  };
+
+  const remove = (id: string) =>
+    setPurchases((prev) => prev.filter((p) => p.id !== id));
+
+  const purchasedQtyFor = (productId: string, d: string) =>
+    purchases
+      .filter((p) => p.productId === productId && p.date === d)
+      .reduce((a, p) => a + p.quantity, 0);
+
+  return { purchases: filtered, allPurchases: purchases, add, remove, purchasedQtyFor };
+}
+
+function nextReceiptNo(): string {
+  const n = (read<number>(KEYS.receiptCounter, 1000) || 1000) + 1;
+  write(KEYS.receiptCounter, n);
+  const d = new Date();
+  const dStr = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  return `R${dStr}-${n}`;
+}
+
+export function useSales(date?: string) {
+  const [sales, setSales] = useStored<Sale[]>(KEYS.sales, []);
+  const filtered = date ? sales.filter((s) => s.date === date) : sales;
+
+  const add = (
+    s: Omit<Sale, "id" | "timestamp" | "date" | "subtotal" | "receiptNo">,
+  ) => {
+    const subtotal = s.items.reduce((a, i) => a + i.amount, 0);
+    const sale: Sale = {
+      ...s,
+      id: uid(),
+      receiptNo: nextReceiptNo(),
+      timestamp: Date.now(),
+      date: todayISO(),
+      subtotal,
     };
     setSales((prev) => [sale, ...prev]);
     return sale;
   };
 
-  const remove = (id: string) => setSales((prev) => prev.filter((s) => s.id !== id));
+  const update = (id: string, patch: Partial<Sale>) =>
+    setSales((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
 
-  return { sales: filtered, allSales: sales, add, remove };
+  const remove = (id: string) =>
+    setSales((prev) => prev.filter((s) => s.id !== id));
+
+  const soldQtyFor = (productId: string, d: string) =>
+    sales
+      .filter((s) => s.date === d)
+      .reduce(
+        (a, s) =>
+          a + s.items.filter((i) => i.productId === productId).reduce((aa, i) => aa + i.quantity, 0),
+        0,
+      );
+
+  return { sales: filtered, allSales: sales, add, update, remove, soldQtyFor };
 }
