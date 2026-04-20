@@ -1,35 +1,60 @@
 export type ProductType = "per_kg" | "fixed" | "meal";
+export type PaymentMethod = "cash" | "mpesa" | "credit";
 
 export interface Product {
   id: string;
   name: string;
   type: ProductType;
-  // For per_kg: price per kg. For fixed/meal: price per unit.
-  price: number;
-  unit: string; // "kg" | "piece" | "plate" | "bowl" etc
+  price: number; // per kg, per piece, or per plate
+  unit: string;
 }
 
 export interface StockEntry {
   id: string;
   productId: string;
   date: string; // YYYY-MM-DD
-  openingQty: number; // kg for per_kg, units for others
+  openingQty: number;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  date: string; // YYYY-MM-DD
+  timestamp: number;
+  productId: string;
+  supplier: string;
+  quantity: number; // kg or units
+  costPerUnit: number; // Ksh per kg / per unit
+  totalCost: number;
+  notes?: string;
+}
+
+export interface SaleItem {
+  productId: string;
+  quantity: number;
+  unitPrice: number; // price per unit at sale time
+  amount: number; // quantity * unitPrice
 }
 
 export interface Sale {
   id: string;
-  productId: string;
+  receiptNo: string;
   date: string; // YYYY-MM-DD
   timestamp: number;
-  quantity: number; // kg or units
-  amount: number; // Ksh
-  unitPriceAtSale: number; // price per kg or per unit at time of sale
+  items: SaleItem[];
+  subtotal: number;
+  payment: PaymentMethod;
+  // Cash extras
+  cashGiven?: number;
+  change?: number;
+  // M-Pesa extras
+  mpesaRef?: string;
+  // Credit extras
+  customerName?: string;
+  customerPhone?: string;
+  paid?: boolean; // for credit: marked paid later
 }
 
 export const todayISO = () => {
   const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
