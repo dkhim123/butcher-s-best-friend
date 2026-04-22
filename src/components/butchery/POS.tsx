@@ -382,15 +382,15 @@ function ItemEntry(props: {
     <div className="space-y-4">
       <div className="space-y-3">
         <div className="space-y-1.5">
-          <Label>Choose product</Label>
+          <Label>POS product list</Label>
           <Input
-            placeholder="Search meat or item"
+            placeholder="Search product"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
 
-        <div className="grid gap-2 max-h-72 overflow-auto rounded-md border bg-muted/30 p-2">
+        <div className="grid gap-2 max-h-80 overflow-auto rounded-md border bg-muted/20 p-2 sm:grid-cols-2">
           {filteredProducts.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
               No matching product found
@@ -406,7 +406,7 @@ function ItemEntry(props: {
                   type="button"
                   onClick={() => setProductId(p.id)}
                   className={[
-                    "grid w-full grid-cols-[1fr_auto] gap-3 rounded-md border px-3 py-3 text-left transition-colors",
+                    "grid min-h-24 w-full grid-cols-[1fr_auto] gap-3 rounded-md border px-3 py-3 text-left transition-colors",
                     isActive
                       ? "border-primary bg-primary/10 shadow-soft"
                       : "border-border bg-background hover:border-primary/40 hover:bg-accent/40",
@@ -414,12 +414,12 @@ function ItemEntry(props: {
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-foreground">{p.name}</span>
+                      <span className="text-base font-semibold text-foreground">{p.name}</span>
                       <Badge variant="secondary" className="text-[10px] uppercase">
                         {typeLabel[p.type]}
                       </Badge>
                     </div>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="mt-1 text-sm font-medium text-primary">
                       {ksh(p.price)} / {p.unit}
                     </p>
                   </div>
@@ -437,8 +437,8 @@ function ItemEntry(props: {
         </div>
 
         {product && (
-          <div className="rounded-md border bg-accent/30 px-3 py-2 text-xs text-muted-foreground">
-            Selected: <span className="font-semibold text-foreground">{product.name}</span>
+          <div className="rounded-md border bg-accent/30 px-3 py-3 text-sm text-muted-foreground">
+            Selected item: <span className="font-semibold text-foreground">{product.name}</span>
             {" · "}Available today:{" "}
             <span className={avail <= 0 ? "font-semibold text-destructive" : "font-semibold text-foreground"}>
               {qty(avail, product.unit)}
