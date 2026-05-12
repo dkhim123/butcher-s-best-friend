@@ -12,10 +12,11 @@ interface Props {
   sale: Sale;
   products: Product[];
   shopName?: string;
+  logoUrl?: string | null;
 }
 
 export const Receipt = forwardRef<HTMLDivElement, Props>(
-  ({ sale, products, shopName = "Mama Choma Butchery" }, ref) => {
+  ({ sale, products, shopName = "Spot Butchery", logoUrl }, ref) => {
     const productOf = (id: string) => products.find((p) => p.id === id);
     const dt = new Date(sale.timestamp);
 
@@ -25,8 +26,15 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
         className="receipt-print bg-white text-black font-mono text-[12px] leading-tight w-[300px] p-4 mx-auto"
       >
         <div className="text-center mb-2">
+          {logoUrl && (
+            <img
+              src={logoUrl}
+              alt={shopName}
+              className="h-14 w-14 object-contain mx-auto mb-1"
+            />
+          )}
           <p className="text-base font-bold uppercase tracking-wide">{shopName}</p>
-          <p className="text-[10px]">Quality Meat & Meals</p>
+          <p className="text-[10px]">Quality Meat &amp; Meals</p>
           <p className="text-[10px]">Tel: 0700 000 000</p>
         </div>
         <div className="border-t border-b border-dashed border-black py-1 mb-2 text-[11px]">

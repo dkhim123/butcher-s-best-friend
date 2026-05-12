@@ -105,3 +105,23 @@
     font-feature-settings: "ss01", "cv11";
   }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   .no-spinner — hide the native up/down arrows on
+   <input type="number">. Used in the POS where we have our own
+   big +/− buttons next to the input, so the OS arrows just add
+   visual noise and look ugly especially on narrow inputs.
+
+   Applies cross-browser:
+     - Chrome / Safari / Edge / Opera : ::-webkit-*-spin-button
+     - Firefox                        : appearance: textfield
+   ───────────────────────────────────────────────────────────── */
+input.no-spinner::-webkit-outer-spin-button,
+input.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input.no-spinner {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

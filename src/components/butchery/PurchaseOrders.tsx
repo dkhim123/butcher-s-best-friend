@@ -11,14 +11,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Truck, Plus, Trash2 } from "lucide-react";
-import { useProducts, usePurchases } from "@/lib/butchery-store";
+import { Truck, Plus, Trash2, Boxes, AlertTriangle } from "lucide-react";
+import { useProducts, usePurchases, useStockOnHand } from "@/lib/butchery-store";
 import { todayISO } from "@/lib/butchery-types";
 import { ksh, qty } from "@/lib/format";
 import { toast } from "sonner";
 
+/**
+ * PurchaseOrders — "I just bought stock from a supplier"
+ *
+ * One canonical place to record a delivery. When you save here, the
+ * po_to_stock_trigger fires in Postgres and automatically pushes a
+ * +qty row into stock_movements. So:
+ *
+ *   Record PO  →  Stock goes up  →  POS shows new available qty
+ *
+ * For non-tracked items (meals, "other"), we still record the PO
+ * (for cost tracking) but warn the user that stock won't move,
+ * because the trigger skips products where track_stock = false.
+ */
 export const PurchaseOrders = () => {
   const { products } = useProducts();
+  const { byProductId } = useStockOnHand();
   const [date, setDate] = useState<string>(todayISO());
   const { purchases, add, remove } = usePurchases(date);
 
@@ -34,6 +48,11 @@ export const PurchaseOrders = () => {
   const total =
     (Number(form.quantity) || 0) * (Number(form.costPerUnit) || 0);
 
+  // Live preview values for the helper line below the form.
+  const currentStock = product ? byProductId(product.id) : 0;
+  const addQty = Number(form.quantity) || 0;
+  const newStock = currentStock + addQty;
+
   const submit = () => {
     if (!form.productId) return toast.error("Pick a product");
     if (!form.supplier.trim()) return toast.error("Enter supplier name");
@@ -41,6 +60,7 @@ export const PurchaseOrders = () => {
     const c = Number(form.costPerUnit);
     if (!Number.isFinite(q) || q <= 0) return toast.error("Enter quantity");
     if (!Number.isFinite(c) || c <= 0) return toast.error("Enter cost");
+
     add({
       productId: form.productId,
       supplier: form.supplier.trim(),
@@ -48,7 +68,21 @@ export const PurchaseOrders = () => {
       costPerUnit: c,
       notes: form.notes.trim() || undefined,
     });
-    toast.success(`PO recorded — ${qty(q, product?.unit ?? "")} of ${product?.name}`);
+
+    // Tell the user exactly what happened to stock so there's no guesswork.
+    if (product?.trackStock) {
+      toast.success(
+        `Recorded — ${qty(q, product.unit)} of ${product.name} added. New stock: ${qty(
+          newStock,
+          product.unit,
+        )}`,
+      );
+    } else {
+      toast.success(
+        `Recorded ${product?.name ?? "purchase"} (cost only — this product doesn't track stock)`,
+      );
+    }
+
     setForm({ productId: "", supplier: "", quantity: "", costPerUnit: "", notes: "" });
   };
 
@@ -64,7 +98,7 @@ export const PurchaseOrders = () => {
           <div>
             <h2 className="font-semibold">Record Purchase / Delivery</h2>
             <p className="text-xs text-muted-foreground">
-              Adds to today's available stock automatically
+              Stock goes up automatically when you save
             </p>
           </div>
         </div>
@@ -76,16 +110,32 @@ export const PurchaseOrders = () => {
               value={form.productId}
               onValueChange={(v) => setForm({ ...form, productId: v })}
             >
-              <SelectTrigger><SelectValue placeholder="Select product" /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue placeholder="Select product" />
+              </SelectTrigger>
               <SelectContent>
-                {products.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name} ({p.unit})
-                  </SelectItem>
-                ))}
+                {products.map((p) => {
+                  const stock = byProductId(p.id);
+                  return (
+                    <SelectItem key={p.id} value={p.id}>
+                      <span className="flex items-center gap-2">
+                        <span>{p.name}</span>
+                        <span className="text-xs text-muted-foreground">
+                          ({p.unit})
+                        </span>
+                        {p.trackStock && (
+                          <span className="text-[10px] text-muted-foreground">
+                            · in stock: {qty(stock, p.unit)}
+                          </span>
+                        )}
+                      </span>
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
           </div>
+
           <div className="space-y-1.5">
             <Label>Supplier</Label>
             <Input
@@ -94,6 +144,7 @@ export const PurchaseOrders = () => {
               onChange={(e) => setForm({ ...form, supplier: e.target.value })}
             />
           </div>
+
           <div className="space-y-1.5">
             <Label>Quantity ({product?.unit ?? "unit"})</Label>
             <Input
@@ -104,6 +155,7 @@ export const PurchaseOrders = () => {
               onChange={(e) => setForm({ ...form, quantity: e.target.value })}
             />
           </div>
+
           <div className="space-y-1.5">
             <Label>Cost per {product?.unit ?? "unit"} (Ksh)</Label>
             <Input
@@ -114,6 +166,7 @@ export const PurchaseOrders = () => {
               onChange={(e) => setForm({ ...form, costPerUnit: e.target.value })}
             />
           </div>
+
           <div className="space-y-1.5 sm:col-span-2">
             <Label>Notes (optional)</Label>
             <Input
@@ -123,6 +176,38 @@ export const PurchaseOrders = () => {
             />
           </div>
         </div>
+
+        {/* Live stock preview — only shown when both a product AND a
+            valid quantity are entered. Helps the user double-check
+            BEFORE clicking Record PO. */}
+        {product && addQty > 0 && product.trackStock && (
+          <div className="mt-4 rounded-md bg-accent/30 border p-3 flex items-center gap-3 text-sm">
+            <Boxes className="h-4 w-4 text-primary shrink-0" />
+            <p>
+              You currently have{" "}
+              <strong>{qty(currentStock, product.unit)}</strong> of{" "}
+              <strong>{product.name}</strong>. After this purchase you'll have{" "}
+              <strong className="text-primary">
+                {qty(newStock, product.unit)}
+              </strong>
+              .
+            </p>
+          </div>
+        )}
+
+        {/* Warning if the user is recording a purchase for a product
+            that doesn't track stock (meals, "other"). The PO still
+            saves (for cost), but stock won't move. */}
+        {product && !product.trackStock && (
+          <div className="mt-4 rounded-md bg-amber-50 border border-amber-200 p-3 flex items-start gap-3 text-sm">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-amber-900">
+              <strong>{product.name}</strong> isn't a stock-tracked product, so
+              we'll only log the cost — no stock will be added. (Stock tracking
+              is for meat and drinks only.)
+            </p>
+          </div>
+        )}
 
         <div className="flex items-center justify-between mt-4 pt-4 border-t">
           <div>

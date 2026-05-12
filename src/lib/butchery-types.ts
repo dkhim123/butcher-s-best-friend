@@ -1,12 +1,32 @@
 export type ProductType = "per_kg" | "fixed" | "meal";
 export type PaymentMethod = "cash" | "mpesa" | "credit";
 
+export type FoodGroup =
+  | "meat"
+  | "prepared_food"
+  | "drinks"
+  | "raw_material"
+  | "sides"
+  | "groceries";
+
+export const FOOD_GROUP_LABELS: Record<FoodGroup, string> = {
+  meat: "Meat",
+  prepared_food: "Prepared food / meals",
+  drinks: "Drinks",
+  raw_material: "Raw material (flour, oil, …)",
+  sides: "Sides (chips, ugali, …)",
+  groceries: "Groceries / packaged",
+};
+
 export interface Product {
   id: string;
   name: string;
   type: ProductType;
-  price: number; // per kg, per piece, or per plate
+  price: number;
   unit: string;
+  category?: string | null;
+  foodGroup?: FoodGroup | null;
+  trackStock: boolean;
 }
 
 export interface StockEntry {
@@ -26,6 +46,7 @@ export interface PurchaseOrder {
   costPerUnit: number; // Ksh per kg / per unit
   totalCost: number;
   notes?: string;
+  received?: boolean;
 }
 
 export interface SaleItem {

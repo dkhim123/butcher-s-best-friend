@@ -1,4 +1,8 @@
+# ─────────────────────────────────────────────────────────────
 # Logs
+# Anything ending in .log is debug output from npm/yarn/pnpm
+# or your own console.log dumps. Never useful in source control.
+# ─────────────────────────────────────────────────────────────
 logs
 *.log
 npm-debug.log*
@@ -7,18 +11,135 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# ─────────────────────────────────────────────────────────────
+# Dependencies & build output
+# node_modules is huge and rebuilt by `npm install`.
+# dist/ and build/ are produced by `npm run build` — every dev
+# regenerates them locally.
+# ─────────────────────────────────────────────────────────────
 node_modules
 dist
 dist-ssr
+build
 *.local
 
-# Editor directories and files
+# ─────────────────────────────────────────────────────────────
+# Environment variables (SECRETS — never commit)
+# These hold your Supabase URL & anon key. Anyone with them can
+# read/write your database. .env.example is the safe template
+# (it has placeholder values only).
+# ─────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+
+# ─────────────────────────────────────────────────────────────
+# Build / dev-server caches
+# Vite, TypeScript and ESLint all keep "I already did this"
+# caches locally. They change every run and cause merge
+# conflicts if committed.
+# ─────────────────────────────────────────────────────────────
+.vite
+.cache
+.turbo
+*.tsbuildinfo
+.eslintcache
+
+# ─────────────────────────────────────────────────────────────
+# Test coverage reports
+# Vitest / Istanbul write HTML + JSON reports here. They are
+# regenerated every test run.
+# ─────────────────────────────────────────────────────────────
+coverage
+.nyc_output
+
+# ─────────────────────────────────────────────────────────────
+# Editor / IDE files
+# These are personal preferences — yours shouldn't be forced
+# on the next developer. We keep .vscode/extensions.json so
+# the team can share recommended extensions.
+# ─────────────────────────────────────────────────────────────
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# ─────────────────────────────────────────────────────────────
+# OS-generated noise
+# macOS, Windows and some Linux file browsers create these
+# automatically when you preview folders. Pure clutter.
+# ─────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ─────────────────────────────────────────────────────────────
+# Editor / backup scratch files
+# Vim, gedit, crash-recovery, ad-hoc backups, etc.
+# ─────────────────────────────────────────────────────────────
+*~
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# ─────────────────────────────────────────────────────────────
+# Supabase CLI local state
+# If you ever run `supabase start` locally, it drops state into
+# these folders. We don't want per-machine state in git.
+# ─────────────────────────────────────────────────────────────
+supabase/.branches
+supabase/.temp
+
+# ─────────────────────────────────────────────────────────────
+# Accidental packaging artifacts
+# `npm pack` produces .tgz files; sometimes folks zip the repo
+# to email it. Don't commit those.
+# ─────────────────────────────────────────────────────────────
+*.tgz
+*.tar.gz
+*.zip
+
+# ─────────────────────────────────────────────────────────────
+# Database seeds, dumps and backups
+# We DO commit schema/migration SQL (spot-butchery-schema.sql,
+# hardening.sql, inventory.sql, indexes/, policies/, etc.) so
+# anyone can rebuild the database from scratch.
+#
+# But seed files and database dumps often contain real
+# customer data (names, phone numbers, sales history). Those
+# should NEVER hit a public git repo. They live on the laptop
+# / Supabase project only.
+#
+# Naming convention:
+#   *-seed.sql        → ignored  (starter rows you might tweak)
+#   *_seed.sql        → ignored
+#   *.seed.sql        → ignored
+#   *-dump.sql        → ignored  (full DB exports)
+#   *-backup.sql      → ignored
+#   *.bak.sql         → ignored
+#   supabase/seeds/   → ignored  (entire folder if it exists)
+#   supabase/migrations-backup/ → ignored
+#
+# If you have a small set of default rows you DO want shared
+# (e.g. default product categories), rename the file to
+# something like `inventory-defaults.sql` and it stays tracked.
+# ─────────────────────────────────────────────────────────────
+*-seed.sql
+*_seed.sql
+*.seed.sql
+*-dump.sql
+*_dump.sql
+*-backup.sql
+*.bak.sql
+*.sql.gz
+supabase/seeds/
+supabase/migrations-backup/

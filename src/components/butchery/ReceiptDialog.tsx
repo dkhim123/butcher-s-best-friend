@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Printer, X } from "lucide-react";
+import { Printer } from "lucide-react";
 import { Receipt } from "./Receipt";
 import { Sale, Product } from "@/lib/butchery-types";
 
@@ -11,9 +11,11 @@ interface Props {
   open: boolean;
   onClose: () => void;
   autoPrint?: boolean;
+  shopName?: string;
+  logoUrl?: string | null;
 }
 
-export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint }: Props) => {
+export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopName, logoUrl }: Props) => {
   const ref = useRef<HTMLDivElement>(null);
   const [printedFor, setPrintedFor] = useState<string | null>(null);
 
@@ -63,20 +65,20 @@ export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint }: Prop
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      {/* <DialogContent> already renders a built-in X close button in
+          the top-right corner via shadcn. So we DON'T add another one
+          in the header — only the title + Print button live there.
+          The pr-14 reserves room for that built-in X so it doesn't
+          visually overlap the Print button. */}
       <DialogContent className="max-w-md p-0 gap-0 overflow-hidden">
-        <div className="flex items-center justify-between p-3 border-b bg-gradient-surface">
-          <p className="font-semibold text-sm">Receipt {sale?.receiptNo}</p>
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" onClick={doPrint}>
-              <Printer className="h-4 w-4 mr-1" /> Print
-            </Button>
-            <Button size="icon" variant="ghost" onClick={onClose}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
+        <div className="flex items-center justify-between gap-2 p-3 pr-14 border-b bg-gradient-surface">
+          <p className="font-semibold text-sm truncate">Receipt {sale?.receiptNo}</p>
+          <Button size="sm" variant="outline" onClick={doPrint}>
+            <Printer className="h-4 w-4 mr-1" /> Print
+          </Button>
         </div>
         <div className="bg-muted/40 py-4 max-h-[70vh] overflow-auto">
-          {sale && <Receipt ref={ref} sale={sale} products={products} />}
+          {sale && <Receipt ref={ref} sale={sale} products={products} shopName={shopName} logoUrl={logoUrl} />}
         </div>
       </DialogContent>
     </Dialog>

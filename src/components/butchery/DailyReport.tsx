@@ -3,14 +3,23 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Wallet, BarChart3, TrendingUp, AlertCircle } from "lucide-react";
 import {
+  Wallet,
+  BarChart3,
+  TrendingUp,
+  AlertCircle,
+  Beef,
+  PieChart,
+} from "lucide-react";
+import {
+  useDailyStockReport,
   useProducts,
   usePurchases,
   useSales,
-  useStock,
+  useSalesByCategory,
+  useTopFoodGroups,
 } from "@/lib/butchery-store";
-import { todayISO } from "@/lib/butchery-types";
+import { FOOD_GROUP_LABELS, FoodGroup, todayISO } from "@/lib/butchery-types";
 import { ksh, qty } from "@/lib/format";
 
 export const DailyReport = () => {
@@ -18,23 +27,34 @@ export const DailyReport = () => {
   const { products } = useProducts();
   const { sales } = useSales(date);
   const { purchases } = usePurchases(date);
-  const { getOpening } = useStock(date);
+  // Single source of truth for stock numbers in the report — the
+  // event log. Replaces the old useStock(date).getOpening which was
+  // reading from a legacy table that no part of the system writes to
+  // anymore, hence the all-zeros bug in the Opening / Purchased /
+  // Available / Remaining columns.
+  const { byProductId: dailyStock } = useDailyStockReport(date);
+  const { rows: byCategory } = useSalesByCategory(date, date);
+  const { rows: byFoodGroup } = useTopFoodGroups(date, date);
 
   const rows = useMemo(() => {
     return products.map((p) => {
-      const purchased = purchases
-        .filter((po) => po.productId === p.id)
-        .reduce((a, po) => a + po.quantity, 0);
+      // All stock numbers come from the stock_movements event log so
+      // Opening + Purchased − Sold == Remaining by construction (no
+      // chance of two tables disagreeing).
+      const stock = dailyStock(p.id);
+      const opening = stock.opening;
+      const purchased = stock.purchased;
+      const sold = stock.sold;
+      const remaining = stock.remaining;
+      const available = opening + purchased;
 
+      // Revenue still comes from the sales table — that's the
+      // authoritative source for what we actually charged the
+      // customer (after any per-line price overrides).
       const items = sales.flatMap((s) =>
         s.items.filter((i) => i.productId === p.id),
       );
-      const sold = items.reduce((a, i) => a + i.quantity, 0);
       const revenue = items.reduce((a, i) => a + i.amount, 0);
-
-      const opening = getOpening(p.id);
-      const available = opening + purchased;
-      const remaining = Math.max(available - sold, 0);
 
       return {
         product: p,
@@ -47,7 +67,7 @@ export const DailyReport = () => {
         transactions: items.length,
       };
     });
-  }, [products, sales, purchases, getOpening]);
+  }, [products, sales, dailyStock]);
 
   const totalRevenue = rows.reduce((a, r) => a + r.revenue, 0);
   const cashTotal = sales.filter((s) => s.payment === "cash").reduce((a, s) => a + s.subtotal, 0);
@@ -109,6 +129,98 @@ export const DailyReport = () => {
             <p className="text-[11px] text-destructive font-semibold mt-1">
               {ksh(creditUnpaid)} unpaid
             </p>
+          )}
+        </Card>
+      </div>
+
+      {/* Two new senior-dev widgets: "by category" + "by food group" */}
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* WIDGET 1 — How much beef vs chicken vs goat sold today? */}
+        <Card className="overflow-hidden shadow-soft">
+          <div className="p-4 border-b bg-gradient-surface">
+            <h3 className="font-semibold flex items-center gap-2">
+              <Beef className="h-4 w-4 text-primary" /> Sales by category
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Beef vs chicken vs goat (and everything else)
+            </p>
+          </div>
+          {byCategory.length === 0 ? (
+            <p className="p-6 text-center text-sm text-muted-foreground">
+              No sales recorded for this date.
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-secondary/60 text-secondary-foreground">
+                <tr>
+                  <th className="text-left p-3 font-semibold">Category</th>
+                  <th className="text-right p-3 font-semibold">Qty sold</th>
+                  <th className="text-right p-3 font-semibold">Revenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byCategory.map((r) => (
+                  <tr key={`${r.category}-${r.foodGroup}`} className="border-t hover:bg-muted/40">
+                    <td className="p-3">
+                      <div className="font-medium font-mono">{r.category}</div>
+                      <Badge variant="secondary" className="text-[10px] mt-0.5">
+                        {FOOD_GROUP_LABELS[r.foodGroup as FoodGroup] ?? r.foodGroup}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-right tabular-nums">
+                      {r.qtySold.toLocaleString("en-KE", { maximumFractionDigits: 3 })}
+                    </td>
+                    <td className="p-3 text-right tabular-nums font-bold text-primary">
+                      {ksh(r.revenue)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+
+        {/* WIDGET 2 — Top-selling food group */}
+        <Card className="overflow-hidden shadow-soft">
+          <div className="p-4 border-b bg-gradient-surface">
+            <h3 className="font-semibold flex items-center gap-2">
+              <PieChart className="h-4 w-4 text-primary" /> Top-selling food group
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Meat · meals · drinks · groceries
+            </p>
+          </div>
+          {byFoodGroup.length === 0 ? (
+            <p className="p-6 text-center text-sm text-muted-foreground">
+              No sales recorded for this date.
+            </p>
+          ) : (
+            <div className="p-3 space-y-2">
+              {byFoodGroup.map((r) => (
+                <div key={r.foodGroup} className="rounded-md border p-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold">
+                      {FOOD_GROUP_LABELS[r.foodGroup as FoodGroup] ?? r.foodGroup}
+                    </span>
+                    <span className="font-bold text-primary">{ksh(r.revenue)}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-primary transition-all"
+                        style={{ width: `${Math.min(r.sharePct, 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground tabular-nums w-12 text-right">
+                      {r.sharePct.toFixed(1)}%
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    {r.txnCount} item{r.txnCount === 1 ? "" : "s"} sold
+                  </p>
+                </div>
+              ))}
+            </div>
           )}
         </Card>
       </div>
