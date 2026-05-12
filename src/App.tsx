@@ -12,9 +12,24 @@ import Settings from "./pages/Settings.tsx";
 import AwaitingApproval from "./pages/AwaitingApproval.tsx";
 import NotFound from "./pages/NotFound.tsx";
 
+// React Query global defaults.
+// Why these values:
+//   refetchOnWindowFocus: true  — when the cashier/admin switches
+//     back to the tab, every visible list refreshes. Cheap and
+//     dramatically improves "feels live" without depending on
+//     realtime working.
+//   refetchOnReconnect: true    — same idea for laptop sleep/wake
+//     and Wi-Fi flapping. We don't want a cashier showing yesterday's
+//     numbers because their internet hiccuped at midnight.
+//   retry: 1                    — one retry is enough; more just
+//     slows down error reporting for real outages.
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { retry: 1, refetchOnWindowFocus: false },
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    },
   },
 });
 

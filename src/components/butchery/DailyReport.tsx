@@ -41,24 +41,27 @@ export const DailyReport = () => {
       // Sale-side numbers — these apply to EVERY product, tracked or
       // not. `sale_items` is the authoritative source for both
       // revenue and "how many of this thing actually went out today".
+      // We deliberately use this for the displayed "Sold" column on
+      // BOTH tracked and untracked products so the column header
+      // means one consistent thing: "what customers actually bought".
+      // Waste and negative adjustments live in the Stock Movements
+      // log, not in this column.
       const items = sales.flatMap((s) =>
         s.items.filter((i) => i.productId === p.id),
       );
       const revenue = items.reduce((a, i) => a + i.amount, 0);
       const soldFromSales = items.reduce((a, i) => a + i.quantity, 0);
 
-      // Stock-side numbers only apply to tracked products (meat,
-      // drinks, raw materials). Meals are "made on demand": there is
-      // no opening stock of "ugali plates", no purchase of "pilau
-      // crates", and no remaining count at end of day. Returning
-      // nulls here tells the JSX to render an em-dash instead of a
-      // misleading "0 plate".
+      // Untracked products (meals): no opening stock, no purchases,
+      // no end-of-day remaining concept — they are made to order.
+      // Show real plate counts only for Sold; everything else
+      // renders as an em-dash so the cashier doesn't get a
+      // misleading "0 plate" line.
       if (!p.trackStock) {
         return {
           product: p,
           opening: null as number | null,
           purchased: null as number | null,
-          available: null as number | null,
           sold: soldFromSales,
           remaining: null as number | null,
           revenue,
@@ -66,17 +69,29 @@ export const DailyReport = () => {
         };
       }
 
-      // Tracked product: all stock numbers come from the
-      // stock_movements event log so Opening + Purchased − Sold ==
-      // Remaining is guaranteed by construction.
+      // Tracked product. Opening and Purchased come from the
+      // stock_movements event log (so they include supplier
+      // deliveries and opening-stock seeds). Sold and Remaining are
+      // derived from sale_items so the visible formula
+      //   Opening + Purchased − Sold = Remaining
+      // ALWAYS balances on screen for tracked products.
+      //
+      // Important trade-off: if someone records waste or a
+      // negative adjustment, this Remaining will be HIGHER than the
+      // live stock-on-hand the POS shows. That divergence is
+      // intentional — the discrepancy itself is the signal that
+      // something other than a sale happened, and the Inventory →
+      // Stock log tab makes that visible at a glance.
       const stock = dailyStock(p.id);
+      const opening = stock.opening;
+      const purchased = stock.purchased;
+      const remaining = Math.max(opening + purchased - soldFromSales, 0);
       return {
         product: p,
-        opening: stock.opening as number | null,
-        purchased: stock.purchased as number | null,
-        available: (stock.opening + stock.purchased) as number | null,
-        sold: stock.sold,
-        remaining: stock.remaining as number | null,
+        opening: opening as number | null,
+        purchased: purchased as number | null,
+        sold: soldFromSales,
+        remaining: remaining as number | null,
         revenue,
         transactions: items.length,
       };
@@ -262,7 +277,6 @@ export const DailyReport = () => {
                 <th className="text-left p-3 font-semibold">Product</th>
                 <th className="text-right p-3 font-semibold">Opening</th>
                 <th className="text-right p-3 font-semibold">+ Purchased</th>
-                <th className="text-right p-3 font-semibold">= Available</th>
                 <th className="text-right p-3 font-semibold">− Sold</th>
                 <th className="text-right p-3 font-semibold">Remaining</th>
                 <th className="text-right p-3 font-semibold">Revenue</th>
@@ -299,11 +313,6 @@ export const DailyReport = () => {
                           ? `+${qty(r.purchased, r.product.unit)}`
                           : "—"}
                     </td>
-                    <td className="p-3 text-right tabular-nums font-medium">
-                      {r.available === null
-                        ? dash
-                        : qty(r.available, r.product.unit)}
-                    </td>
                     <td className="p-3 text-right tabular-nums">
                       {/* This column ALWAYS shows a real number —
                           including plate counts for meals. */}
@@ -313,9 +322,14 @@ export const DailyReport = () => {
                       {r.remaining === null ? (
                         dash
                       ) : (
+                        // Show Remaining in red bold when stock ran out:
+                        // there was inventory to sell today (opening +
+                        // purchased > 0) but it's all gone now. That's
+                        // a "restock soon" signal for the cashier.
                         <span
                           className={
-                            (r.available ?? 0) > 0 && r.remaining === 0
+                            (r.opening ?? 0) + (r.purchased ?? 0) > 0 &&
+                            r.remaining === 0
                               ? "text-destructive font-bold"
                               : "font-semibold"
                           }
@@ -333,7 +347,12 @@ export const DailyReport = () => {
             </tbody>
             <tfoot>
               <tr className="border-t-2 bg-gradient-surface font-bold">
-                <td className="p-3" colSpan={6}>
+                {/* colSpan is the number of columns to the LEFT of
+                    Revenue. We removed the Available column, so this
+                    drops from 6 to 5. Keeping these in sync prevents
+                    the "Total Revenue" label from overshooting into
+                    the Revenue cell or leaving a blank gap. */}
+                <td className="p-3" colSpan={5}>
                   Total Revenue
                 </td>
                 <td className="p-3 text-right tabular-nums text-primary">

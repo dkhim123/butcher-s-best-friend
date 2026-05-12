@@ -763,6 +763,8 @@ export interface DailyStockBreakdown {
 export function useDailyStockReport(date: string = todayISO()) {
   const orgId = getOrgId();
   const branchId = getBranchId();
+  const qc = useQueryClient();
+  const chId = useRef(`daily_stock_report-${Math.random().toString(36).slice(2)}`);
 
   const { data, isLoading } = useQuery({
     queryKey: ["daily_stock_report", orgId, branchId, date],
@@ -804,19 +806,44 @@ export function useDailyStockReport(date: string = todayISO()) {
       for (const r of rows ?? []) {
         const pid = r.product_id as string;
         const delta = Number(r.delta_qty);
+        // Defensive: if a malformed row ever reaches the client
+        // (e.g. delta_qty IS NULL, or someone manually inserted a
+        // non-numeric value), Number() returns NaN. NaN silently
+        // poisons every running total because (NaN + x) === NaN and
+        // (NaN ?? 0) === NaN. Skipping the row keeps the report
+        // truthful and surfaces the underlying data bug elsewhere.
+        if (!Number.isFinite(delta)) {
+          console.warn(
+            "[useDailyStockReport] skipping malformed stock_movement",
+            { product_id: pid, delta_qty: r.delta_qty },
+          );
+          continue;
+        }
+        const reason = String(r.reason);
         const occurredAt = String(r.occurred_at);
         const agg = get(pid);
 
         if (occurredAt < dayStartIso) {
-          // Before this date — counts toward opening (signed).
+          // Anything that happened before today is part of the
+          // running opening balance for today's report.
           agg.opening += delta;
+        } else if (reason === "opening") {
+          // "Opening stock" seed for a newly-created product. Even
+          // though the INSERT happened today, semantically it
+          // represents what the business STARTED the day with —
+          // not a supplier purchase. Otherwise the Purchased column
+          // would mirror Opening every time someone creates a new
+          // product (which made Available look like a duplicate of
+          // Purchased in the Daily Report).
+          agg.opening += delta;
+        } else if (delta >= 0) {
+          // Real supplier purchase or a positive manual adjustment
+          // made today (e.g. "received 10kg more from butcher").
+          agg.purchased += delta;
         } else {
-          // Between day-start and day-end. Split by sign so positive
-          // adjustments show under Purchased and negative ones (waste,
-          // corrections, sales) show under Sold. That keeps the math
-          // simple: opening + purchased − sold = remaining, always.
-          if (delta >= 0) agg.purchased += delta;
-          else agg.sold += Math.abs(delta);
+          // Sales, waste, or negative corrections — anything that
+          // reduced stock today.
+          agg.sold += Math.abs(delta);
         }
       }
 
@@ -833,6 +860,21 @@ export function useDailyStockReport(date: string = todayISO()) {
     staleTime: 30_000,
     enabled: !!orgId && !!branchId,
   });
+
+  // Realtime: any new movement on this branch invalidates the
+  // breakdown. Without this, the Daily Report's stock columns only
+  // refresh on page reload. Critical for the "remote admin watches
+  // sales as they happen" flow.
+  useEffect(() => {
+    if (!orgId || !branchId) return;
+    const channel = supabase
+      .channel(chId.current)
+      .on("postgres_changes", { event: "*", schema: "public", table: "stock_movements" }, () =>
+        qc.invalidateQueries({ queryKey: ["daily_stock_report", orgId, branchId, date] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc, orgId, branchId, date]);
 
   const byProductId = (pid: string): DailyStockBreakdown =>
     data?.get(pid) ?? { opening: 0, purchased: 0, sold: 0, remaining: 0 };
@@ -857,6 +899,8 @@ export function useSalesByCategory(
 ) {
   const orgId = getOrgId();
   const branchId = getBranchId();
+  const qc = useQueryClient();
+  const chId = useRef(`sales_by_category-${Math.random().toString(36).slice(2)}`);
 
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["report_sales_by_category", orgId, branchId, from, to],
@@ -881,6 +925,23 @@ export function useSalesByCategory(
     enabled: !!orgId && !!branchId,
   });
 
+  // Realtime: every new sale_item changes these aggregates, so we
+  // subscribe to sale_items inserts/updates/deletes and invalidate
+  // the report. (Subscribing to `sales` alone misses item edits.)
+  useEffect(() => {
+    if (!orgId || !branchId) return;
+    const channel = supabase
+      .channel(chId.current)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sale_items" }, () =>
+        qc.invalidateQueries({ queryKey: ["report_sales_by_category", orgId, branchId, from, to] }),
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales" }, () =>
+        qc.invalidateQueries({ queryKey: ["report_sales_by_category", orgId, branchId, from, to] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc, orgId, branchId, from, to]);
+
   return { rows, isLoading };
 }
 
@@ -900,6 +961,8 @@ export function useTopFoodGroups(
 ) {
   const orgId = getOrgId();
   const branchId = getBranchId();
+  const qc = useQueryClient();
+  const chId = useRef(`top_food_groups-${Math.random().toString(36).slice(2)}`);
 
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["report_top_food_groups", orgId, branchId, from, to],
@@ -922,6 +985,21 @@ export function useTopFoodGroups(
     staleTime: 30_000,
     enabled: !!orgId && !!branchId,
   });
+
+  // Realtime: keep the food-group pie/breakdown in sync with sale_items.
+  useEffect(() => {
+    if (!orgId || !branchId) return;
+    const channel = supabase
+      .channel(chId.current)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sale_items" }, () =>
+        qc.invalidateQueries({ queryKey: ["report_top_food_groups", orgId, branchId, from, to] }),
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales" }, () =>
+        qc.invalidateQueries({ queryKey: ["report_top_food_groups", orgId, branchId, from, to] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc, orgId, branchId, from, to]);
 
   return { rows, isLoading };
 }
