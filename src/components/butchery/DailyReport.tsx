@@ -38,31 +38,45 @@ export const DailyReport = () => {
 
   const rows = useMemo(() => {
     return products.map((p) => {
-      // All stock numbers come from the stock_movements event log so
-      // Opening + Purchased − Sold == Remaining by construction (no
-      // chance of two tables disagreeing).
-      const stock = dailyStock(p.id);
-      const opening = stock.opening;
-      const purchased = stock.purchased;
-      const sold = stock.sold;
-      const remaining = stock.remaining;
-      const available = opening + purchased;
-
-      // Revenue still comes from the sales table — that's the
-      // authoritative source for what we actually charged the
-      // customer (after any per-line price overrides).
+      // Sale-side numbers — these apply to EVERY product, tracked or
+      // not. `sale_items` is the authoritative source for both
+      // revenue and "how many of this thing actually went out today".
       const items = sales.flatMap((s) =>
         s.items.filter((i) => i.productId === p.id),
       );
       const revenue = items.reduce((a, i) => a + i.amount, 0);
+      const soldFromSales = items.reduce((a, i) => a + i.quantity, 0);
 
+      // Stock-side numbers only apply to tracked products (meat,
+      // drinks, raw materials). Meals are "made on demand": there is
+      // no opening stock of "ugali plates", no purchase of "pilau
+      // crates", and no remaining count at end of day. Returning
+      // nulls here tells the JSX to render an em-dash instead of a
+      // misleading "0 plate".
+      if (!p.trackStock) {
+        return {
+          product: p,
+          opening: null as number | null,
+          purchased: null as number | null,
+          available: null as number | null,
+          sold: soldFromSales,
+          remaining: null as number | null,
+          revenue,
+          transactions: items.length,
+        };
+      }
+
+      // Tracked product: all stock numbers come from the
+      // stock_movements event log so Opening + Purchased − Sold ==
+      // Remaining is guaranteed by construction.
+      const stock = dailyStock(p.id);
       return {
         product: p,
-        opening,
-        purchased,
-        available,
-        sold,
-        remaining,
+        opening: stock.opening as number | null,
+        purchased: stock.purchased as number | null,
+        available: (stock.opening + stock.purchased) as number | null,
+        sold: stock.sold,
+        remaining: stock.remaining as number | null,
         revenue,
         transactions: items.length,
       };
@@ -255,46 +269,67 @@ export const DailyReport = () => {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.product.id} className="border-t hover:bg-muted/40">
-                  <td className="p-3">
-                    <div className="font-medium">{r.product.name}</div>
-                    <Badge variant="secondary" className="text-[10px] mt-0.5">
-                      {r.product.type === "per_kg"
-                        ? "per kg"
-                        : r.product.type === "meal"
-                          ? "meal"
-                          : "fixed"}
-                    </Badge>
-                  </td>
-                  <td className="p-3 text-right tabular-nums">
-                    {qty(r.opening, r.product.unit)}
-                  </td>
-                  <td className="p-3 text-right tabular-nums text-success">
-                    {r.purchased > 0 ? `+${qty(r.purchased, r.product.unit)}` : "—"}
-                  </td>
-                  <td className="p-3 text-right tabular-nums font-medium">
-                    {qty(r.available, r.product.unit)}
-                  </td>
-                  <td className="p-3 text-right tabular-nums">
-                    {qty(r.sold, r.product.unit)}
-                  </td>
-                  <td className="p-3 text-right tabular-nums">
-                    <span
-                      className={
-                        r.available > 0 && r.remaining === 0
-                          ? "text-destructive font-bold"
-                          : "font-semibold"
-                      }
-                    >
-                      {qty(r.remaining, r.product.unit)}
-                    </span>
-                  </td>
-                  <td className="p-3 text-right tabular-nums font-bold text-primary">
-                    {ksh(r.revenue)}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                // For untracked items (meals), the stock columns are
+                // "not applicable". A muted em-dash makes that obvious
+                // at a glance and stops the cashier from thinking the
+                // system has lost their data.
+                const dash = (
+                  <span className="text-muted-foreground/60">—</span>
+                );
+                return (
+                  <tr key={r.product.id} className="border-t hover:bg-muted/40">
+                    <td className="p-3">
+                      <div className="font-medium">{r.product.name}</div>
+                      <Badge variant="secondary" className="text-[10px] mt-0.5">
+                        {r.product.type === "per_kg"
+                          ? "per kg"
+                          : r.product.type === "meal"
+                            ? "meal"
+                            : "fixed"}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-right tabular-nums">
+                      {r.opening === null ? dash : qty(r.opening, r.product.unit)}
+                    </td>
+                    <td className="p-3 text-right tabular-nums text-success">
+                      {r.purchased === null
+                        ? dash
+                        : r.purchased > 0
+                          ? `+${qty(r.purchased, r.product.unit)}`
+                          : "—"}
+                    </td>
+                    <td className="p-3 text-right tabular-nums font-medium">
+                      {r.available === null
+                        ? dash
+                        : qty(r.available, r.product.unit)}
+                    </td>
+                    <td className="p-3 text-right tabular-nums">
+                      {/* This column ALWAYS shows a real number —
+                          including plate counts for meals. */}
+                      {qty(r.sold, r.product.unit)}
+                    </td>
+                    <td className="p-3 text-right tabular-nums">
+                      {r.remaining === null ? (
+                        dash
+                      ) : (
+                        <span
+                          className={
+                            (r.available ?? 0) > 0 && r.remaining === 0
+                              ? "text-destructive font-bold"
+                              : "font-semibold"
+                          }
+                        >
+                          {qty(r.remaining, r.product.unit)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3 text-right tabular-nums font-bold text-primary">
+                      {ksh(r.revenue)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
             <tfoot>
               <tr className="border-t-2 bg-gradient-surface font-bold">
