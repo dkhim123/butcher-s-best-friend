@@ -250,6 +250,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // any mutation that updates the active org or branch (logo
   // change, name change, branch add/delete, etc.) so the Header
   // and every other consumer of useAuth() re-renders immediately.
+  // Columns the anon role is ALLOWED to read on `profiles`.
+  // Must stay in sync with hardening.sql section 3.1 (the
+  // `GRANT SELECT (…) ON public.profiles TO anon` list).
+  // We deliberately omit `password_hash` so REST queries don't
+  // get "permission denied for column password_hash" errors.
+  const PROFILE_SAFE_COLUMNS =
+    "id, email, full_name, role, org_id, branch_id, permissions, created_at, updated_at";
+
   const refreshSession = async () => {
     if (!session) return;
 
@@ -260,11 +268,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session.branch?.id
         ? supabase.from("branches").select("*").eq("id", session.branch.id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
-      supabase.from("profiles").select("*").eq("id", session.profile.id).maybeSingle(),
+      // NB: explicit columns — anon does NOT have SELECT on password_hash.
+      // Doing select("*") here silently fails and the whole refresh aborts,
+      // which makes the UI feel "stuck on the old org name".
+      supabase
+        .from("profiles")
+        .select(PROFILE_SAFE_COLUMNS)
+        .eq("id", session.profile.id)
+        .maybeSingle(),
     ]);
 
     if (orgErr || profileErr || branchErr) {
-      console.error("refreshSession failed", { orgErr, branchErr, profileErr });
+      // Loud, named error so future bugs of this shape are easy to spot.
+      console.error(
+        "[refreshSession] failed — UI will keep stale data. " +
+          "Most common cause: querying a column the anon role can't read.",
+        { orgErr, branchErr, profileErr },
+      );
       return;
     }
     if (!org || !profile) {
