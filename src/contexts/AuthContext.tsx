@@ -1,5 +1,4 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import bcrypt from "bcryptjs";
 import { supabase } from "@/lib/supabase";
 import type { Database, UserPermissions } from "@/lib/database.types";
 
@@ -111,6 +110,55 @@ async function resolveActiveBranch(
   return (data as Branch | null) ?? null;
 }
 
+const PROFILE_SAFE_COLUMNS =
+  "id, email, full_name, role, org_id, branch_id, permissions, created_at, updated_at";
+
+function normaliseEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/**
+ * After login/signup RPCs return a session bundle, re-fetch org / branch /
+ * profile from the database. That guarantees the header shows the real
+ * business name (not stale JSON or a fallback like "Spot Butchery").
+ */
+async function hydrateSessionFromDb(payload: {
+  profile: Profile;
+  org: Organisation;
+  branch: Branch | null;
+}): Promise<Session> {
+  const [{ data: org }, { data: profile }] = await Promise.all([
+    supabase.from("organisations").select("*").eq("id", payload.org.id).maybeSingle(),
+    supabase
+      .from("profiles")
+      .select(PROFILE_SAFE_COLUMNS)
+      .eq("id", payload.profile.id)
+      .maybeSingle(),
+  ]);
+
+  let branch: Branch | null = payload.branch;
+  const branchId = (profile as Profile | null)?.branch_id ?? payload.profile.branch_id;
+  if (branchId) {
+    const { data: branchRow } = await supabase
+      .from("branches")
+      .select("*")
+      .eq("id", branchId)
+      .maybeSingle();
+    branch = (branchRow as Branch | null) ?? null;
+  }
+
+  const activeBranch = await resolveActiveBranch(
+    (org as Organisation | null)?.id ?? payload.org.id,
+    branch,
+  );
+
+  return {
+    profile: (profile as Profile) ?? payload.profile,
+    org: (org as Organisation) ?? payload.org,
+    branch: activeBranch,
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(loadSession);
   const [isLoading] = useState(false);
@@ -133,11 +181,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // protected by a column-level GRANT in the schema.
   const signIn = async (email: string, password: string) => {
     const { data, error } = await supabase.rpc("verify_login", {
-      p_email: email,
+      p_email: normaliseEmail(email),
       p_password: password,
     });
 
-    if (error) return { error: error.message };
+    if (error) {
+      const msg = error.message.includes("Invalid email or password")
+        ? "Invalid email or password"
+        : error.message;
+      return { error: msg };
+    }
     if (!data) return { error: "Invalid email or password" };
 
     const payload = data as {
@@ -146,13 +199,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       branch: Branch | null;
     };
 
-    if (!payload.org) return { error: "Organisation not found" };
+    if (!payload.org?.id) return { error: "Organisation not found" };
 
-    // If the user has no branch_id in their profile (admins), fall back
-    // to the first branch in the org so they can perform operations.
-    const activeBranch = await resolveActiveBranch(payload.org.id, payload.branch);
-
-    persist({ profile: payload.profile, org: payload.org, branch: activeBranch });
+    const session = await hydrateSessionFromDb(payload);
+    persist(session);
     return { error: null };
   };
 
@@ -166,7 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     businessName: string,
   ) => {
     const { data, error } = await supabase.rpc("register_first_admin", {
-      p_email: email,
+      p_email: normaliseEmail(email),
       p_password: password,
       p_full_name: fullName,
       p_business_name: businessName,
@@ -181,19 +231,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       branch: Branch | null;
     };
 
-    // register_first_admin returns branch: NULL by design (admins see all).
-    // Resolve the just-created Main Branch as the active operating branch.
-    const activeBranch = await resolveActiveBranch(payload.org.id, payload.branch);
-
-    persist({ profile: payload.profile, org: payload.org, branch: activeBranch });
+    const session = await hydrateSessionFromDb(payload);
+    persist(session);
     return { error: null };
   };
 
   // ── createUser (admin → adds staff) ─────────────────────────
-  // Still hashes client-side and inserts directly. INSERT on
-  // password_hash is allowed; SELECT on it is not. Safe enough
-  // for an admin-only flow; can move to an RPC later when we
-  // add session tokens.
+  // Password is hashed server-side via register_staff_user() so
+  // verify_login() can check it. (Browser bcryptjs hashes did not
+  // match Postgres crypt(), which blocked cashier/manager login.)
   const createUser = async ({
     email,
     password,
@@ -211,35 +257,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }) => {
     if (!session) return { error: "Not authenticated" };
 
-    const normalised = email.trim().toLowerCase();
-    const { data: existing } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("email", normalised)
-      .maybeSingle();
+    if (password.length < 8) {
+      return { error: "Password must be at least 8 characters" };
+    }
 
-    if (existing) return { error: "Email already registered" };
+    if ((role === "cashier" || role === "manager") && !branchId) {
+      return {
+        error: "Cashiers and managers must be assigned to a branch",
+      };
+    }
 
-    const password_hash = await bcrypt.hash(password, 10);
-    const { error } = await supabase.from("profiles").insert({
-      email: normalised,
-      full_name: fullName,
-      password_hash,
-      role,
-      org_id: session.org.id,
-      branch_id: branchId,
-      permissions,
+    const { error } = await supabase.rpc("register_staff_user", {
+      p_email: normaliseEmail(email),
+      p_password: password,
+      p_full_name: fullName.trim(),
+      p_role: role,
+      p_org_id: session.org.id,
+      p_branch_id: branchId,
+      p_permissions: permissions,
     });
 
-    if (error) return { error: error.message };
+    if (error) {
+      if (error.message.includes("function") && error.message.includes("does not exist")) {
+        return {
+          error:
+            "Staff signup is not set up yet. Run supabase/register-staff-user.sql in Supabase SQL Editor, then try again.",
+        };
+      }
+      return { error: error.message };
+    }
     return { error: null };
   };
 
   const updatePermissions = async (userId: string, permissions: UserPermissions) => {
+    if (!session) return { error: "Not authenticated" };
     const { error } = await supabase
       .from("profiles")
       .update({ permissions })
-      .eq("id", userId);
+      .eq("id", userId)
+      .eq("org_id", session.org.id);
     if (error) return { error: error.message };
     return { error: null };
   };
@@ -250,14 +306,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // any mutation that updates the active org or branch (logo
   // change, name change, branch add/delete, etc.) so the Header
   // and every other consumer of useAuth() re-renders immediately.
-  // Columns the anon role is ALLOWED to read on `profiles`.
-  // Must stay in sync with hardening.sql section 3.1 (the
-  // `GRANT SELECT (…) ON public.profiles TO anon` list).
-  // We deliberately omit `password_hash` so REST queries don't
-  // get "permission denied for column password_hash" errors.
-  const PROFILE_SAFE_COLUMNS =
-    "id, email, full_name, role, org_id, branch_id, permissions, created_at, updated_at";
-
   const refreshSession = async () => {
     if (!session) return;
 
@@ -307,6 +355,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       branch: activeBranch,
     });
   };
+
+  // ── Refresh org/profile from DB on first load ───────────────
+  // Fixes stale business name in localStorage after logout/login
+  // or after renaming the business in Settings on another tab.
+  useEffect(() => {
+    if (!session?.org?.id) return;
+    void refreshSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Auto-heal a stored session that has no active branch ────
   // If you logged in BEFORE the resolveActiveBranch fix, your

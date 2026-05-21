@@ -4,6 +4,7 @@ import type { Database, UserPermissions } from "@/lib/database.types";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -99,7 +100,14 @@ export const UserManagement = () => {
     e.preventDefault();
     if (!newFullName.trim()) { toast.error("Enter full name"); return; }
     if (!newEmail.trim()) { toast.error("Enter email"); return; }
-    if (newPassword.length < 6) { toast.error("Password must be at least 6 characters"); return; }
+    if (newPassword.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
+    if ((newRole === "cashier" || newRole === "manager") && newBranchId === "none") {
+      toast.error("Cashiers and managers must be assigned to a branch");
+      return;
+    }
 
     setCreating(true);
     const { error } = await createUser({
@@ -127,7 +135,12 @@ export const UserManagement = () => {
 
   const handleRoleChange = async (userId: string, role: Role) => {
     setSaving(userId);
-    const { error } = await supabase.from("profiles").update({ role }).eq("id", userId);
+    // Always scope by org_id so one business cannot change another's staff.
+    const { error } = await supabase
+      .from("profiles")
+      .update({ role })
+      .eq("id", userId)
+      .eq("org_id", orgId);
     setSaving(null);
     if (error) {
       toast.error("Failed to update role: " + error.message);
@@ -152,7 +165,11 @@ export const UserManagement = () => {
   const deleteUser = async (userId: string, name: string) => {
     if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
     setSaving(userId);
-    const { error } = await supabase.from("profiles").delete().eq("id", userId);
+    const { error } = await supabase
+      .from("profiles")
+      .delete()
+      .eq("id", userId)
+      .eq("org_id", orgId);
     setSaving(null);
     if (error) {
       toast.error("Failed to delete user: " + error.message);
@@ -179,7 +196,9 @@ export const UserManagement = () => {
           </div>
           <div>
             <h2 className="font-semibold">Create Staff Account</h2>
-            <p className="text-xs text-muted-foreground">Add a cashier, manager, or admin</p>
+            <p className="text-xs text-muted-foreground">
+              Staff are only for <strong>{org?.name ?? "your business"}</strong> — not shared with other businesses
+            </p>
           </div>
         </div>
 
@@ -209,14 +228,13 @@ export const UserManagement = () => {
 
           <div className="space-y-1.5">
             <Label htmlFor="new-password">Password</Label>
-            <Input
+            <PasswordInput
               id="new-password"
-              type="password"
-              placeholder="Min 6 characters"
+              placeholder="Min 8 characters"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               required
-              minLength={6}
+              minLength={8}
             />
           </div>
 
@@ -241,7 +259,7 @@ export const UserManagement = () => {
                 <SelectValue placeholder="Select branch" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">No branch (admin)</SelectItem>
+                <SelectItem value="none">No branch (admin only)</SelectItem>
                 {branches.map((b) => (
                   <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
                 ))}

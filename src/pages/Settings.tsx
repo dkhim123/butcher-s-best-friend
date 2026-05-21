@@ -173,7 +173,11 @@ export default function Settings() {
   const handleDeleteBranch = async (branchId: string, name: string) => {
     if (!confirm(`Delete branch "${name}"? All data in this branch will be lost.`)) return;
     setDeletingBranch(branchId);
-    const { error } = await supabase.from("branches").delete().eq("id", branchId);
+    const { error } = await supabase
+      .from("branches")
+      .delete()
+      .eq("id", branchId)
+      .eq("org_id", org.id);
 
     if (error) {
       setDeletingBranch(null);

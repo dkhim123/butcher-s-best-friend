@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Beef, Loader2, Info } from "lucide-react";
@@ -26,7 +27,12 @@ export default function Signup() {
     if (password !== confirm) { toast.error("Passwords do not match"); return; }
 
     setLoading(true);
-    const { error } = await signUp(email.trim(), password, fullName.trim(), businessName.trim());
+    const { error } = await signUp(
+      email.trim().toLowerCase(),
+      password,
+      fullName.trim(),
+      businessName.trim(),
+    );
     setLoading(false);
 
     if (error) {
@@ -55,7 +61,8 @@ export default function Signup() {
         <div className="flex items-start gap-2.5 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 p-3 text-sm text-blue-700 dark:text-blue-300">
           <Info className="h-4 w-4 mt-0.5 shrink-0" />
           <span>
-            This registers your <strong>business</strong> and creates your admin account. Add staff (cashiers, managers) from the <strong>Users</strong> tab after signing in.
+            Each signup creates a <strong>separate business</strong> with its own stock, sales, and staff.
+            Other butcheries on this platform cannot see your data. After signing in, add cashiers and managers from the <strong>Users</strong> tab.
           </span>
         </div>
 
@@ -98,9 +105,8 @@ export default function Signup() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="password">Password</Label>
-              <Input
+              <PasswordInput
                 id="password"
-                type="password"
                 placeholder="Min 8 characters"
                 autoComplete="new-password"
                 value={password}
@@ -111,9 +117,8 @@ export default function Signup() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="confirm">Confirm Password</Label>
-              <Input
+              <PasswordInput
                 id="confirm"
-                type="password"
                 placeholder="Re-enter password"
                 autoComplete="new-password"
                 value={confirm}

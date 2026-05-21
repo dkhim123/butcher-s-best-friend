@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Beef, Loader2 } from "lucide-react";
@@ -38,7 +39,9 @@ export default function Login() {
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-bold tracking-tight">Spot Butchery</h1>
-            <p className="text-sm text-muted-foreground mt-1">Sign in to your account</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Sign in to your business account
+            </p>
           </div>
         </div>
 
@@ -58,9 +61,8 @@ export default function Login() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="password">Password</Label>
-              <Input
+              <PasswordInput
                 id="password"
-                type="password"
                 placeholder="••••••••"
                 autoComplete="current-password"
                 value={password}
