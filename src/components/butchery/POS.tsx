@@ -284,8 +284,8 @@ export const POS = () => {
             Sticky on desktop so it stays visible while scrolling the
             product grid. Uses the full viewport height minus the header
             so MANY cart rows are visible at once — receipt-style. */}
-        <Card className="p-4 shadow-elevated lg:sticky lg:top-24 lg:self-start flex flex-col h-[calc(100vh-7rem)] min-h-[480px]">
-          <h3 className="font-semibold mb-3 flex items-center gap-2">
+        <Card className="p-4 shadow-elevated lg:sticky lg:top-24 lg:self-start flex flex-col h-[calc(100vh-7rem)] min-h-[480px] overflow-hidden">
+          <h3 className="font-semibold mb-3 flex items-center gap-2 shrink-0">
             <ShoppingCart className="h-5 w-5 text-primary" />
             Cart
             {cart.length > 0 && (
@@ -296,7 +296,7 @@ export const POS = () => {
           </h3>
 
           {cart.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center py-10 text-center">
+            <div className="flex-1 flex flex-col items-center justify-center py-10 text-center min-h-0">
               <ShoppingCart className="h-12 w-12 text-muted-foreground/30 mb-3" />
               <p className="text-sm text-muted-foreground">
                 Tap a product to add it to the sale.
@@ -307,33 +307,38 @@ export const POS = () => {
             </div>
           ) : (
             <>
-              <div className="flex-1 space-y-2 overflow-auto pr-1 -mr-1 min-h-0">
-                {cart.map((line) => {
-                  const p = products.find((x) => x.id === line.productId);
-                  if (!p) return null;
-                  return (
-                    <CartLineRow
-                      key={line.productId}
-                      product={p}
-                      line={line}
-                      available={availableQty(p.id)}
-                      onIncrement={(by) => incrementLine(p.id, by)}
-                      onSetQty={(v) => setLineQty(p.id, v)}
-                      onSetPrice={(v) => setLinePrice(p.id, v)}
-                      onRemove={() => removeLine(p.id)}
-                    />
-                  );
-                })}
+              {/* Scrollable cart lines only — total/payment stay fixed below
+                  so the last item is never hidden behind the pay section. */}
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain -mx-1 px-1">
+                <div className="space-y-2 pb-3">
+                  {cart.map((line) => {
+                    const p = products.find((x) => x.id === line.productId);
+                    if (!p) return null;
+                    return (
+                      <CartLineRow
+                        key={line.productId}
+                        product={p}
+                        line={line}
+                        available={availableQty(p.id)}
+                        onIncrement={(by) => incrementLine(p.id, by)}
+                        onSetQty={(v) => setLineQty(p.id, v)}
+                        onSetPrice={(v) => setLinePrice(p.id, v)}
+                        onRemove={() => removeLine(p.id)}
+                      />
+                    );
+                  })}
+                </div>
               </div>
 
-              <div className="border-t mt-3 pt-3 flex items-center justify-between">
-                <span className="text-sm font-semibold">Total</span>
-                <span className="text-2xl font-bold text-primary tabular-nums">
-                  {ksh(cartTotal)}
-                </span>
-              </div>
+              {/* Pinned footer: always visible, does not cover cart items */}
+              <div className="shrink-0 border-t mt-2 pt-3 bg-card space-y-3 shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold">Total</span>
+                  <span className="text-2xl font-bold text-primary tabular-nums">
+                    {ksh(cartTotal)}
+                  </span>
+                </div>
 
-              <div className="mt-3">
                 <PaymentSection
                   total={cartTotal}
                   payment={payment}
@@ -349,15 +354,15 @@ export const POS = () => {
                   setCustomerPhone={setCustomerPhone}
                   compact
                 />
-              </div>
 
-              <Button
-                onClick={handleCheckout}
-                disabled={selling}
-                className="w-full bg-gradient-primary h-12 mt-3 text-base font-semibold"
-              >
-                {selling ? "Saving…" : "Complete sale"}
-              </Button>
+                <Button
+                  onClick={handleCheckout}
+                  disabled={selling}
+                  className="w-full bg-gradient-primary h-12 text-base font-semibold"
+                >
+                  {selling ? "Saving…" : "Complete sale"}
+                </Button>
+              </div>
             </>
           )}
         </Card>
@@ -769,23 +774,39 @@ function PaymentSection(props: {
       </div>
 
       {payment === "cash" && (
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1">
-            <Label className="text-xs">Cash given</Label>
-            <Input
-              type="number"
-              inputMode="decimal"
-              placeholder={String(Math.round(total))}
-              value={cashGiven}
-              onChange={(e) => setCashGiven(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Change</Label>
-            <div className="h-10 px-3 rounded-md border bg-muted flex items-center font-bold text-primary tabular-nums">
-              {ksh(change)}
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label className="text-xs">Cash given</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                placeholder={String(Math.round(total))}
+                value={cashGiven}
+                onChange={(e) => setCashGiven(e.target.value)}
+                className="no-spinner"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Change</Label>
+              <div className="h-10 px-3 rounded-md border bg-muted flex items-center font-bold text-primary tabular-nums">
+                {ksh(change)}
+              </div>
             </div>
           </div>
+          {/* One tap when the customer pays the exact total — no typing. */}
+          <Button
+            type="button"
+            variant={cashGiven !== "" && Number(cashGiven) === total ? "default" : "outline"}
+            className="w-full h-9 text-sm font-semibold"
+            onClick={() =>
+              setCashGiven(
+                total % 1 === 0 ? String(Math.round(total)) : total.toFixed(2),
+              )
+            }
+          >
+            Exact — customer paid {ksh(total)}
+          </Button>
         </div>
       )}
 
