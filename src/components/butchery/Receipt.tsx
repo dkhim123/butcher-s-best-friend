@@ -1,11 +1,12 @@
 import { forwardRef } from "react";
-import { Sale, Product, PaymentMethod } from "@/lib/butchery-types";
+import { Sale, Product } from "@/lib/butchery-types";
 import { ksh, qty } from "@/lib/format";
 
-const payLabel: Record<PaymentMethod, string> = {
+const payLabel: Record<string, string> = {
   cash: "CASH",
   mpesa: "M-PESA",
   credit: "CREDIT",
+  split: "SPLIT",
 };
 
 interface Props {
@@ -13,10 +14,14 @@ interface Props {
   products: Product[];
   shopName?: string;
   logoUrl?: string | null;
+  tagline?: string | null;
+  phone?: string | null;
+  mpesaPaybill?: string | null;
+  mpesaTill?: string | null;
 }
 
 export const Receipt = forwardRef<HTMLDivElement, Props>(
-  ({ sale, products, shopName = "Spot Butchery", logoUrl }, ref) => {
+  ({ sale, products, shopName = "Your Business", logoUrl, tagline, phone, mpesaPaybill, mpesaTill }, ref) => {
     const productOf = (id: string) => products.find((p) => p.id === id);
     const dt = new Date(sale.timestamp);
 
@@ -34,8 +39,8 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
             />
           )}
           <p className="text-base font-bold uppercase tracking-wide">{shopName}</p>
-          <p className="text-[10px]">Quality Meat &amp; Meals</p>
-          <p className="text-[10px]">Tel: 0700 000 000</p>
+          {tagline && <p className="text-[10px]">{tagline}</p>}
+          {phone && <p className="text-[10px]">Tel: {phone}</p>}
         </div>
         <div className="border-t border-b border-dashed border-black py-1 mb-2 text-[11px]">
           <div className="flex justify-between">
@@ -63,16 +68,21 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
           <tbody>
             {sale.items.map((it, i) => {
               const p = productOf(it.productId);
+              // For bar pours the "unit" is the serving name (Tot / Glass).
+              const unitLabel = it.servingName ?? p?.unit ?? "u";
               return (
                 <tr key={i} className="align-top">
                   <td className="pt-1">
-                    <div className="font-semibold">{p?.name ?? "—"}</div>
+                    <div className="font-semibold">
+                      {p?.name ?? "—"}
+                      {it.servingName ? ` (${it.servingName})` : ""}
+                    </div>
                     <div className="text-[10px]">
-                      @ {ksh(it.unitPrice)}/{p?.unit ?? "u"}
+                      @ {ksh(it.unitPrice)}/{unitLabel}
                     </div>
                   </td>
                   <td className="text-right pt-1">
-                    {qty(it.quantity, p?.unit ?? "")}
+                    {qty(it.quantity, it.servingName ?? p?.unit ?? "")}
                   </td>
                   <td className="text-right pt-1 font-semibold">
                     {ksh(it.amount)}
@@ -106,6 +116,13 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
               <span className="font-bold">{sale.mpesaRef}</span>
             </div>
           )}
+          {sale.payment === "split" &&
+            (sale.payments ?? []).map((p, i) => (
+              <div key={i} className="flex justify-between">
+                <span>{p.method === "cash" ? "Cash" : "M-Pesa"}{p.ref ? ` (${p.ref})` : ""}</span>
+                <span className="font-bold">{ksh(p.amount)}</span>
+              </div>
+            ))}
           {sale.payment === "credit" && (
             <>
               <div className="flex justify-between">
@@ -122,6 +139,24 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
             </>
           )}
         </div>
+
+        {(mpesaPaybill || mpesaTill) && (
+          <div className="mt-2 pt-2 border-t border-dashed border-black text-[10px]">
+            <p className="text-center font-bold">PAY VIA M-PESA</p>
+            {mpesaPaybill && (
+              <div className="flex justify-between">
+                <span>Paybill</span>
+                <span className="font-bold">{mpesaPaybill}</span>
+              </div>
+            )}
+            {mpesaTill && (
+              <div className="flex justify-between">
+                <span>Buy Goods (Till)</span>
+                <span className="font-bold">{mpesaTill}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="text-center mt-3 text-[10px] border-t border-dashed border-black pt-2">
           <p>Thank you — Karibu tena!</p>

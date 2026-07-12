@@ -1,8 +1,10 @@
-import { Beef, LogOut, User } from "lucide-react";
+import { Hotel, LogOut, User, UtensilsCrossed, Wine } from "lucide-react";
 import { ksh } from "@/lib/format";
 import { useSales } from "@/lib/butchery-store";
-import { todayISO } from "@/lib/butchery-types";
+import { todayISO, Department, DEPARTMENT_SHORT_LABELS } from "@/lib/butchery-types";
 import { useAuth } from "@/contexts/AuthContext";
+import { useActiveDepartment } from "@/contexts/DepartmentContext";
+import { InstallButton } from "@/components/InstallButton";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -15,11 +17,62 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const ROLE_LABEL: Record<string, string> = {
+  super_admin: "Super Admin",
   admin: "Admin",
   manager: "Manager",
   cashier: "Cashier",
   pending: "Pending",
 };
+
+const DEPT_ICON: Record<Department, typeof Wine> = {
+  restaurant: UtensilsCrossed,
+  bar: Wine,
+  rooms: Hotel,
+};
+
+/**
+ * DepartmentSwitcher — segmented control shown when the user may see more than
+ * one department (admin/manager). Cashiers see a single static badge instead,
+ * because their department is fixed by their login.
+ */
+function DepartmentSwitcher() {
+  const { allowed, active, setActive, canSwitch } = useActiveDepartment();
+
+  if (!canSwitch) {
+    const Icon = DEPT_ICON[active];
+    return (
+      <Badge variant="secondary" className="gap-1.5 py-1.5 px-3">
+        <Icon className="h-3.5 w-3.5" />
+        {DEPARTMENT_SHORT_LABELS[active]}
+      </Badge>
+    );
+  }
+
+  return (
+    <div className="inline-flex rounded-full border bg-muted/40 p-0.5">
+      {allowed.map((d) => {
+        const Icon = DEPT_ICON[d];
+        const on = d === active;
+        return (
+          <button
+            key={d}
+            type="button"
+            onClick={() => setActive(d)}
+            aria-pressed={on}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+              on
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {DEPARTMENT_SHORT_LABELS[d]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export const Header = () => {
   const { sales } = useSales(todayISO());
@@ -41,13 +94,13 @@ export const Header = () => {
             />
           ) : (
             <div className="h-11 w-11 rounded-xl bg-gradient-primary grid place-items-center shadow-elevated shrink-0">
-              <Beef className="h-6 w-6 text-primary-foreground" />
+              <Hotel className="h-6 w-6 text-primary-foreground" />
             </div>
           )}
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-bold tracking-tight truncate">
-                {org?.name ?? "Spot Butchery"}
+                {org?.name ?? "Decent microsystem"}
               </h1>
               {branch && (
                 <Badge variant="outline" className="text-xs shrink-0 hidden sm:flex">
@@ -65,7 +118,12 @@ export const Header = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-4 shrink-0">
+        <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+          <div className="hidden md:block">
+            <InstallButton variant="ghost" />
+          </div>
+          <DepartmentSwitcher />
+
           <div className="text-right hidden sm:block">
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
               Today's Sales

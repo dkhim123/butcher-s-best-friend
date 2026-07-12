@@ -19,13 +19,43 @@ import {
   Pencil,
   Check,
   X,
+  UtensilsCrossed,
+  Wine,
+  Hotel,
+  SplitSquareHorizontal,
 } from "lucide-react";
-import { useProducts, useSales, useStockOnHand } from "@/lib/butchery-store";
-import { PaymentMethod, Product, Sale, SaleItem } from "@/lib/butchery-types";
+import { useCustomers, useProducts, useSales, useServings, useShift, useStockOnHand } from "@/lib/butchery-store";
+import type { CustomerBalance } from "@/lib/butchery-types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ShiftBar } from "./ShiftBar";
+import {
+  Department,
+  DEPARTMENT_SHORT_LABELS,
+  PaymentMethod,
+  Product,
+  ProductServing,
+  Sale,
+  SaleItem,
+  SalePayment,
+  SalePaymentKind,
+} from "@/lib/butchery-types";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ksh, qty } from "@/lib/format";
 import { toast } from "sonner";
 import { ReceiptDialog } from "./ReceiptDialog";
 import { useAuth } from "@/contexts/AuthContext";
+import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { useWeighingScale } from "@/lib/useWeighingScale";
 
 /**
@@ -47,17 +77,42 @@ import { useWeighingScale } from "@/lib/useWeighingScale";
  *   (tap-tap-tap-pay) is what a non-tech person already expects.
  */
 
+const DEPT_ICON: Record<Department, typeof Wine> = {
+  restaurant: UtensilsCrossed,
+  bar: Wine,
+  rooms: Hotel,
+};
+
 interface CartLine {
+  /** Unique per cart row: productId, or productId|servingId for a bar pour. */
+  key: string;
   productId: string;
   quantity: number;
   /** When set, overrides the product's default price for this line only. */
   unitPriceOverride?: number;
+  /** Bar serving (Tot/Glass/Bottle) — absent for normal whole-unit lines. */
+  serving?: ProductServing;
 }
 
+const lineKey = (productId: string, servingId?: string) =>
+  servingId ? `${productId}|${servingId}` : productId;
+
 export const POS = () => {
-  const { org } = useAuth();
+  const { org, role } = useAuth();
+  const {
+    active: activeDepartment,
+    allowed: allowedDepartments,
+    setActive: setActiveDepartment,
+    canSwitch: canSwitchDepartment,
+  } = useActiveDepartment();
   const { products } = useProducts();
+  const { forProduct: servingsFor } = useServings();
   const { add: addSale } = useSales();
+  const { shift, cashSoFar, openShift, closeShift } = useShift();
+  const { customers, add: addCustomer } = useCustomers();
+  // Cashiers must be on an open shift to sell (accountability + cash-up).
+  // Admins/managers can ring up without one.
+  const requiresShift = role === "cashier";
   const { byProductId: stockOnHand } = useStockOnHand();
   const scale = useWeighingScale();
 
@@ -72,14 +127,22 @@ export const POS = () => {
   // have to manually associate a weight with a row.
   const [activeKgLineId, setActiveKgLineId] = useState<string | null>(null);
 
+  // When a bar drink offers multiple pours, tapping it opens this picker.
+  const [servingPickerFor, setServingPickerFor] = useState<Product | null>(null);
+
   const [search, setSearch] = useState("");
 
   // ── Payment state ───────────────────────────────────────────
-  const [payment, setPayment] = useState<PaymentMethod>("cash");
+  const [payment, setPayment] = useState<SalePaymentKind>("cash");
   const [cashGiven, setCashGiven] = useState("");
   const [mpesaRef, setMpesaRef] = useState("");
+  // Split payment (part cash + part M-Pesa).
+  const [splitCash, setSplitCash] = useState("");
+  const [splitMpesa, setSplitMpesa] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  // Existing loan account chosen for a credit sale (null = new / walk-in).
+  const [creditCustomerId, setCreditCustomerId] = useState<string | null>(null);
 
   // ── Receipt + saving state ──────────────────────────────────
   const [lastSale, setLastSale] = useState<Sale | null>(null);
@@ -98,15 +161,12 @@ export const POS = () => {
 
   // ── Cart operations ─────────────────────────────────────────
 
-  /** Tap a product card → +1 if not already in cart, else qty + 1. */
-  const tapProduct = (p: Product) => {
+  /** Add one of a plain product line (or bump its quantity). */
+  const addPlainLine = (p: Product) => {
     setCart((c) => {
-      const idx = c.findIndex(
-        (l) => l.productId === p.id && l.unitPriceOverride === undefined,
-      );
-      if (idx === -1) {
-        return [...c, { productId: p.id, quantity: 1 }];
-      }
+      const key = lineKey(p.id);
+      const idx = c.findIndex((l) => l.key === key && l.unitPriceOverride === undefined);
+      if (idx === -1) return [...c, { key, productId: p.id, quantity: 1 }];
       const next = [...c];
       next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
       return next;
@@ -114,31 +174,57 @@ export const POS = () => {
     if (p.type === "per_kg") setActiveKgLineId(p.id);
   };
 
-  const setLineQty = (productId: string, q: number) =>
+  /** Add one of a specific bar serving (Tot/Glass/Bottle) — or bump it. */
+  const addServingLine = (p: Product, serving: ProductServing) => {
+    const key = lineKey(p.id, serving.id);
+    setCart((c) => {
+      const idx = c.findIndex((l) => l.key === key);
+      if (idx === -1) return [...c, { key, productId: p.id, quantity: 1, serving }];
+      const next = [...c];
+      next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
+      return next;
+    });
+    setServingPickerFor(null);
+  };
+
+  /**
+   * Tap a product card. Bar drinks that offer more than one pour open a
+   * serving picker; everything else drops straight into the cart.
+   */
+  const tapProduct = (p: Product) => {
+    const servings = servingsFor(p.id);
+    if (p.containerMl != null && servings.length > 1) {
+      setServingPickerFor(p);
+      return;
+    }
+    if (p.containerMl != null && servings.length === 1) {
+      addServingLine(p, servings[0]);
+      return;
+    }
+    addPlainLine(p);
+  };
+
+  const setLineQty = (key: string, q: number) =>
     setCart((c) =>
-      c.map((l) =>
-        l.productId === productId ? { ...l, quantity: Math.max(0, q) } : l,
-      ),
+      c.map((l) => (l.key === key ? { ...l, quantity: Math.max(0, q) } : l)),
     );
 
-  const incrementLine = (productId: string, by: number) =>
+  const incrementLine = (key: string, by: number) =>
     setCart((c) =>
       c.map((l) =>
-        l.productId === productId
+        l.key === key
           ? { ...l, quantity: Math.max(0, Number((l.quantity + by).toFixed(3))) }
           : l,
       ),
     );
 
-  const setLinePrice = (productId: string, price?: number) =>
+  const setLinePrice = (key: string, price?: number) =>
     setCart((c) =>
-      c.map((l) =>
-        l.productId === productId ? { ...l, unitPriceOverride: price } : l,
-      ),
+      c.map((l) => (l.key === key ? { ...l, unitPriceOverride: price } : l)),
     );
 
-  const removeLine = (productId: string) =>
-    setCart((c) => c.filter((l) => l.productId !== productId));
+  const removeLine = (key: string) =>
+    setCart((c) => c.filter((l) => l.key !== key));
 
   // ── Scale → active kg line ──────────────────────────────────
   // When a kg product is in the cart AND the scale streams a weight,
@@ -150,27 +236,39 @@ export const POS = () => {
   }, [scale.connected, scale.lastWeight, scale.lastReadAt, activeKgLineId]);
 
   // ── Computed values ─────────────────────────────────────────
+  // Price for one unit of a cart line: a bar serving's price wins, then any
+  // manual override, then the product's default price.
+  const linePrice = (line: CartLine, p: Product) =>
+    line.serving ? line.serving.price : line.unitPriceOverride ?? p.price;
+
   const cartTotal = useMemo(() => {
     return cart.reduce((sum, l) => {
       const p = products.find((x) => x.id === l.productId);
       if (!p) return sum;
-      const price = l.unitPriceOverride ?? p.price;
-      return sum + price * l.quantity;
+      return sum + linePrice(l, p) * l.quantity;
     }, 0);
   }, [cart, products]);
 
   const change = Math.max((Number(cashGiven) || 0) - cartTotal, 0);
 
+  // The till only shows the active department's products. A Bar cashier can
+  // never ring up a Restaurant plate, and vice-versa — this is the core of the
+  // "your login is your department" model.
   const filteredProducts = useMemo(() => {
+    const inDept = products.filter((p) => p.department === activeDepartment);
     const term = search.trim().toLowerCase();
-    if (!term) return products;
-    return products.filter((p) => p.name.toLowerCase().includes(term));
-  }, [products, search]);
+    if (!term) return inDept;
+    return inDept.filter((p) => p.name.toLowerCase().includes(term));
+  }, [products, activeDepartment, search]);
 
   // ── Checkout ────────────────────────────────────────────────
   const handleCheckout = async () => {
     if (cart.length === 0) {
       toast.error("Cart is empty");
+      return;
+    }
+    if (requiresShift && !shift) {
+      toast.error("Open your shift before selling");
       return;
     }
     for (const line of cart) {
@@ -180,8 +278,7 @@ export const POS = () => {
         toast.error(`Set quantity for ${p.name}`);
         return;
       }
-      const price = line.unitPriceOverride ?? p.price;
-      if (price <= 0) {
+      if (linePrice(line, p) <= 0) {
         toast.error(`Set price for ${p.name}`);
         return;
       }
@@ -194,35 +291,75 @@ export const POS = () => {
       toast.error("Enter M-Pesa reference");
       return;
     }
-    if (payment === "credit" && !customerName.trim()) {
-      toast.error("Enter customer name for credit sale");
+    if (payment === "credit" && !creditCustomerId && !customerName.trim()) {
+      toast.error("Pick or enter a customer for the credit sale");
       return;
+    }
+    // Build the split breakdown and check it adds up to the total.
+    let splitPayments: SalePayment[] | undefined;
+    if (payment === "split") {
+      const c = Number(splitCash) || 0;
+      const m = Number(splitMpesa) || 0;
+      if (Math.abs(c + m - cartTotal) > 0.5) {
+        toast.error(`Split must add up to ${ksh(cartTotal)} (currently ${ksh(c + m)})`);
+        return;
+      }
+      if (m > 0 && !mpesaRef.trim()) {
+        toast.error("Enter the M-Pesa reference for the M-Pesa part");
+        return;
+      }
+      splitPayments = [
+        ...(c > 0 ? [{ method: "cash" as const, amount: c }] : []),
+        ...(m > 0 ? [{ method: "mpesa" as const, amount: m, ref: mpesaRef.trim() || undefined }] : []),
+      ];
     }
 
     const items: SaleItem[] = cart.map((line) => {
       const p = products.find((x) => x.id === line.productId)!;
-      const price = line.unitPriceOverride ?? p.price;
+      const price = linePrice(line, p);
       return {
         productId: p.id,
         quantity: line.quantity,
         unitPrice: price,
         amount: line.quantity * price,
+        servingName: line.serving?.name ?? null,
+        servingMl: line.serving?.volumeMl ?? null,
       };
     });
 
     setSelling(true);
     try {
+      // Credit sale: attach to a loan account. Use the chosen customer, or
+      // create one from the typed name so it opens a trackable balance.
+      let customerId: string | null = null;
+      let creditName = customerName.trim();
+      if (payment === "credit") {
+        if (creditCustomerId) {
+          customerId = creditCustomerId;
+          creditName = customers.find((c) => c.id === creditCustomerId)?.name ?? creditName;
+        } else if (creditName) {
+          const created = await addCustomer({
+            name: creditName,
+            phone: customerPhone.trim() || undefined,
+          });
+          customerId = created.id;
+        }
+      }
+
       const sale = await addSale({
         items,
         payment,
+        payments: splitPayments,
         cashGiven:
           payment === "cash" ? Number(cashGiven) || cartTotal : undefined,
         change: payment === "cash" ? change : undefined,
         mpesaRef: payment === "mpesa" ? mpesaRef.trim() : undefined,
-        customerName: payment === "credit" ? customerName.trim() : undefined,
+        customerName: payment === "credit" ? creditName : undefined,
         customerPhone:
           payment === "credit" ? customerPhone.trim() || undefined : undefined,
+        customerId,
         paid: payment !== "credit",
+        shiftId: shift?.id ?? null,
       });
       setLastSale(sale);
       setShowReceipt(true);
@@ -230,8 +367,11 @@ export const POS = () => {
       setActiveKgLineId(null);
       setCashGiven("");
       setMpesaRef("");
+      setSplitCash("");
+      setSplitMpesa("");
       setCustomerName("");
       setCustomerPhone("");
+      setCreditCustomerId(null);
       toast.success(`Sale ${sale.receiptNo} recorded`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save sale");
@@ -243,6 +383,16 @@ export const POS = () => {
   // ── Render ──────────────────────────────────────────────────
   return (
     <>
+      {requiresShift && (
+        <div className="mb-4">
+          <ShiftBar
+            shift={shift}
+            cashSoFar={cashSoFar}
+            onOpen={openShift}
+            onClose={(counted) => closeShift(shift!.id, counted)}
+          />
+        </div>
+      )}
       <div className="grid lg:grid-cols-[1fr_420px] gap-6">
         {/* LEFT — product grid */}
         <div className="space-y-4">
@@ -261,6 +411,33 @@ export const POS = () => {
             </div>
           </Card>
 
+          {/* One cashier, one bill: flip the grid between departments without
+              losing the cart, so food + a drink land on the same receipt. */}
+          {canSwitchDepartment && (
+            <div className="flex gap-2">
+              {allowedDepartments.map((d) => {
+                const Icon = DEPT_ICON[d];
+                const on = d === activeDepartment;
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setActiveDepartment(d)}
+                    aria-pressed={on}
+                    className={`flex-1 inline-flex items-center justify-center gap-2 rounded-xl border py-3 text-sm font-semibold transition-colors ${
+                      on
+                        ? "bg-primary text-primary-foreground border-primary shadow-soft"
+                        : "bg-background text-muted-foreground hover:text-foreground hover:border-primary/50"
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {DEPARTMENT_SHORT_LABELS[d]}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {filteredProducts.length === 0 ? (
               <p className="col-span-full text-center text-sm text-muted-foreground py-12">
@@ -272,7 +449,10 @@ export const POS = () => {
                   key={p.id}
                   product={p}
                   stock={availableQty(p.id)}
-                  inCart={cart.find((l) => l.productId === p.id)?.quantity ?? 0}
+                  inCart={cart
+                    .filter((l) => l.productId === p.id)
+                    .reduce((a, l) => a + l.quantity, 0)}
+                  hasServings={p.containerMl != null && servingsFor(p.id).length > 0}
                   onTap={() => tapProduct(p)}
                 />
               ))
@@ -316,14 +496,15 @@ export const POS = () => {
                     if (!p) return null;
                     return (
                       <CartLineRow
-                        key={line.productId}
+                        key={line.key}
                         product={p}
                         line={line}
                         available={availableQty(p.id)}
-                        onIncrement={(by) => incrementLine(p.id, by)}
-                        onSetQty={(v) => setLineQty(p.id, v)}
-                        onSetPrice={(v) => setLinePrice(p.id, v)}
-                        onRemove={() => removeLine(p.id)}
+                        showDept={canSwitchDepartment}
+                        onIncrement={(by) => incrementLine(line.key, by)}
+                        onSetQty={(v) => setLineQty(line.key, v)}
+                        onSetPrice={(v) => setLinePrice(line.key, v)}
+                        onRemove={() => removeLine(line.key)}
                       />
                     );
                   })}
@@ -352,21 +533,59 @@ export const POS = () => {
                   setCustomerName={setCustomerName}
                   customerPhone={customerPhone}
                   setCustomerPhone={setCustomerPhone}
+                  customers={customers}
+                  creditCustomerId={creditCustomerId}
+                  setCreditCustomerId={setCreditCustomerId}
+                  splitCash={splitCash}
+                  setSplitCash={setSplitCash}
+                  splitMpesa={splitMpesa}
+                  setSplitMpesa={setSplitMpesa}
                   compact
                 />
 
                 <Button
                   onClick={handleCheckout}
-                  disabled={selling}
+                  disabled={selling || (requiresShift && !shift)}
                   className="w-full bg-gradient-primary h-12 text-base font-semibold"
                 >
-                  {selling ? "Saving…" : "Complete sale"}
+                  {requiresShift && !shift
+                    ? "Open a shift to sell"
+                    : selling
+                      ? "Saving…"
+                      : "Complete sale"}
                 </Button>
               </div>
             </>
           )}
         </Card>
       </div>
+
+      {/* Serving picker — appears when a bar drink has multiple pours. */}
+      <Dialog open={!!servingPickerFor} onOpenChange={(o) => !o && setServingPickerFor(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{servingPickerFor?.name}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground -mt-2 mb-1">
+            How is it being served?
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {servingPickerFor &&
+              servingsFor(servingPickerFor.id).map((sv) => (
+                <button
+                  key={sv.id}
+                  type="button"
+                  onClick={() => addServingLine(servingPickerFor, sv)}
+                  className="rounded-xl border p-3 text-left hover:border-primary hover:bg-primary/5 transition-colors"
+                >
+                  <p className="font-semibold">{sv.name}</p>
+                  <p className="text-xs text-muted-foreground">{sv.volumeMl} ml</p>
+                  <p className="text-sm font-bold text-primary mt-1">{ksh(sv.price)}</p>
+                </button>
+              ))}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <ReceiptDialog
         sale={lastSale}
@@ -376,6 +595,10 @@ export const POS = () => {
         autoPrint
         shopName={org?.name}
         logoUrl={org?.logo_url}
+        tagline={org?.tagline}
+        phone={org?.phone}
+        mpesaPaybill={org?.mpesa_paybill}
+        mpesaTill={org?.mpesa_till}
       />
     </>
   );
@@ -399,6 +622,7 @@ function ProductTile({
   product,
   stock,
   inCart,
+  hasServings,
   onTap,
 }: {
   product: Product;
@@ -406,12 +630,15 @@ function ProductTile({
   stock: number;
   /** Quantity currently in the cart for THIS product. */
   inCart: number;
+  /** Bar drink with pour options — tapping opens the serving picker. */
+  hasServings?: boolean;
   onTap: () => void;
 }) {
   const isInfinite = !Number.isFinite(stock);
-  // Effective stock = what's left after the cart is committed.
-  const effective = isInfinite ? stock : Math.max(0, stock - inCart);
-  const out = !isInfinite && effective <= 0;
+  // Effective stock = what's left after the cart is committed. For drinks with
+  // servings, cart quantity is in pours (not bottles), so we don't subtract it.
+  const effective = isInfinite || hasServings ? stock : Math.max(0, stock - inCart);
+  const out = !isInfinite && !hasServings && effective <= 0;
 
   return (
     <button
@@ -429,11 +656,17 @@ function ProductTile({
         {product.name}
       </p>
       <p className="text-primary font-bold text-lg">
-        {ksh(product.price)}
-        <span className="text-xs font-medium text-muted-foreground">
-          {" "}
-          / {product.unit}
-        </span>
+        {hasServings ? (
+          <span className="text-sm">Tap to choose pour</span>
+        ) : (
+          <>
+            {ksh(product.price)}
+            <span className="text-xs font-medium text-muted-foreground">
+              {" "}
+              / {product.unit}
+            </span>
+          </>
+        )}
       </p>
 
       <div className="mt-auto pt-1">
@@ -445,7 +678,7 @@ function ProductTile({
           ) : (
             <p className="text-xs text-muted-foreground">
               {qty(effective, product.unit)} available
-              {inCart > 0 && (
+              {!hasServings && inCart > 0 && (
                 <span className="ml-1 text-[10px] text-primary">
                   · {qty(inCart, product.unit)} in cart
                 </span>
@@ -499,6 +732,7 @@ function CartLineRow({
   product,
   line,
   available,
+  showDept,
   onIncrement,
   onSetQty,
   onSetPrice,
@@ -507,16 +741,23 @@ function CartLineRow({
   product: Product;
   line: CartLine;
   available: number;
+  /** Show the department chip (mixed-department cart). */
+  showDept?: boolean;
   onIncrement: (by: number) => void;
   onSetQty: (v: number) => void;
   onSetPrice: (v?: number) => void;
   onRemove: () => void;
 }) {
-  const isKg = product.type === "per_kg";
+  const serving = line.serving;
+  const isKg = product.type === "per_kg" && !serving;
   const step = isKg ? 0.5 : 1;
-  const price = line.unitPriceOverride ?? product.price;
+  // A serving has a fixed price; otherwise use the override or the product price.
+  const price = serving ? serving.price : line.unitPriceOverride ?? product.price;
+  const unitLabel = serving ? serving.name : product.unit;
   const subtotal = price * line.quantity;
-  const overSell = product.trackStock && line.quantity > available;
+  // Serving quantities are in pours, not bottles, so the bottle-count "available"
+  // can't be compared directly — skip the oversell warning for servings.
+  const overSell = !serving && product.trackStock && line.quantity > available;
 
   const [editingPrice, setEditingPrice] = useState(false);
   const [priceDraft, setPriceDraft] = useState(String(price));
@@ -567,6 +808,18 @@ function CartLineRow({
     >
       {/* Row 1: name + subtotal + remove (no wasted vertical space) */}
       <div className="flex items-center gap-2">
+        {showDept && (
+          <Badge
+            variant="outline"
+            className="text-[9px] uppercase px-1 py-0 shrink-0 gap-0.5"
+            title={DEPARTMENT_SHORT_LABELS[product.department]}
+          >
+            {(() => {
+              const Icon = DEPT_ICON[product.department];
+              return <Icon className="h-2.5 w-2.5" />;
+            })()}
+          </Badge>
+        )}
         <p className="font-semibold text-sm flex-1 truncate">{product.name}</p>
         <span className="font-bold text-primary text-sm tabular-nums whitespace-nowrap">
           {ksh(subtotal)}
@@ -610,7 +863,7 @@ function CartLineRow({
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>
-        <span className="text-muted-foreground">{product.unit}</span>
+        <span className="text-muted-foreground">{unitLabel}</span>
         <span className="text-muted-foreground">×</span>
 
         {editingPrice ? (
@@ -644,6 +897,11 @@ function CartLineRow({
               <X className="h-3 w-3" />
             </Button>
           </>
+        ) : serving ? (
+          // Bar servings are priced in the product's Servings editor — fixed here.
+          <span className="inline-flex items-center gap-1 text-muted-foreground ml-auto tabular-nums">
+            {ksh(price)} <span className="opacity-70">/ {serving.name}</span>
+          </span>
         ) : (
           <button
             type="button"
@@ -712,8 +970,8 @@ function CartLineRow({
  * ───────────────────────────────────────────────────────────── */
 function PaymentSection(props: {
   total: number;
-  payment: PaymentMethod;
-  setPayment: (p: PaymentMethod) => void;
+  payment: SalePaymentKind;
+  setPayment: (p: SalePaymentKind) => void;
   cashGiven: string;
   setCashGiven: (v: string) => void;
   change: number;
@@ -723,6 +981,13 @@ function PaymentSection(props: {
   setCustomerName: (v: string) => void;
   customerPhone: string;
   setCustomerPhone: (v: string) => void;
+  customers: CustomerBalance[];
+  creditCustomerId: string | null;
+  setCreditCustomerId: (v: string | null) => void;
+  splitCash: string;
+  setSplitCash: (v: string) => void;
+  splitMpesa: string;
+  setSplitMpesa: (v: string) => void;
   compact?: boolean;
 }) {
   const {
@@ -738,6 +1003,13 @@ function PaymentSection(props: {
     setCustomerName,
     customerPhone,
     setCustomerPhone,
+    customers,
+    creditCustomerId,
+    setCreditCustomerId,
+    splitCash,
+    setSplitCash,
+    splitMpesa,
+    setSplitMpesa,
     compact,
   } = props;
 
@@ -749,12 +1021,13 @@ function PaymentSection(props: {
           <span className="text-2xl font-bold text-primary">{ksh(total)}</span>
         </div>
       )}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-4 gap-2">
         {(
           [
             { key: "cash", label: "Cash", icon: Banknote },
             { key: "mpesa", label: "M-Pesa", icon: Smartphone },
             { key: "credit", label: "Credit", icon: Clock },
+            { key: "split", label: "Split", icon: SplitSquareHorizontal },
           ] as const
         ).map(({ key, label, icon: Icon }) => (
           <button
@@ -822,23 +1095,102 @@ function PaymentSection(props: {
       )}
 
       {payment === "credit" && (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-2">
           <div className="space-y-1">
-            <Label className="text-xs">Customer name *</Label>
-            <Input
-              placeholder="Required"
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-            />
+            <Label className="text-xs">Loan account</Label>
+            <Select
+              value={creditCustomerId ?? "new"}
+              onValueChange={(v) => setCreditCustomerId(v === "new" ? null : v)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="new">+ New customer</SelectItem>
+                {customers.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                    {c.balance > 0 ? ` · owes ${ksh(c.balance)}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Phone (optional)</Label>
-            <Input
-              placeholder="0700..."
-              value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
-            />
+          {/* Name + phone only when creating a new account */}
+          {!creditCustomerId && (
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label className="text-xs">Customer name *</Label>
+                <Input
+                  placeholder="Required"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Phone (optional)</Label>
+                <Input
+                  placeholder="0700..."
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {payment === "split" && (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label className="text-xs">Cash part</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                placeholder="0"
+                value={splitCash}
+                onChange={(e) => setSplitCash(e.target.value)}
+                className="no-spinner"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">M-Pesa part</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                placeholder="0"
+                value={splitMpesa}
+                onChange={(e) => setSplitMpesa(e.target.value)}
+                className="no-spinner"
+              />
+            </div>
           </div>
+          {Number(splitMpesa) > 0 && (
+            <div className="space-y-1">
+              <Label className="text-xs">M-Pesa reference</Label>
+              <Input
+                placeholder="e.g. SFF1A2B3C4"
+                value={mpesaRef}
+                onChange={(e) => setMpesaRef(e.target.value)}
+              />
+            </div>
+          )}
+          {(() => {
+            const entered = (Number(splitCash) || 0) + (Number(splitMpesa) || 0);
+            const remaining = total - entered;
+            const balanced = Math.abs(remaining) <= 0.5;
+            return (
+              <div
+                className={`flex items-center justify-between rounded-md px-3 py-2 text-sm font-semibold ${
+                  balanced ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"
+                }`}
+              >
+                <span>{balanced ? "Balances ✓" : "Remaining"}</span>
+                <span className="tabular-nums">{balanced ? ksh(total) : ksh(remaining)}</span>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

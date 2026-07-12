@@ -6,7 +6,9 @@ import { Inventory } from "@/components/butchery/Inventory";
 import { DailyReport } from "@/components/butchery/DailyReport";
 import { Transactions } from "@/components/butchery/Transactions";
 import { UserManagement } from "@/components/butchery/UserManagement";
+import { Customers } from "@/components/butchery/Customers";
 import { useAuth } from "@/contexts/AuthContext";
+import { DepartmentProvider } from "@/contexts/DepartmentContext";
 import { Link } from "react-router-dom";
 import {
   ShoppingCart,
@@ -14,6 +16,7 @@ import {
   BarChart3,
   ReceiptText,
   Users,
+  Wallet,
   Settings,
 } from "lucide-react";
 
@@ -24,7 +27,7 @@ import {
 // (Products + Purchases + Stock). Its own internal sub-tabs are
 // managed inside Inventory.tsx and encoded in the URL as e.g.
 // "#inventory/purchases".
-type TabId = "pos" | "inventory" | "transactions" | "report" | "users";
+type TabId = "pos" | "inventory" | "transactions" | "report" | "customers" | "users";
 const DEFAULT_TAB: TabId = "pos";
 
 const Index = () => {
@@ -42,8 +45,9 @@ const Index = () => {
     hasPermission("can_view_stock");
   const canSeeTransactions = isManagerOrAbove || hasPermission("can_view_transactions");
   const canSeeReports = isManagerOrAbove || hasPermission("can_view_reports");
+  const canSeeCustomers = isManagerOrAbove || hasPermission("can_manage_credit");
 
-  const extraTabCount = [canSeeInventory, canSeeTransactions, canSeeReports, isAdmin].filter(Boolean).length;
+  const extraTabCount = [canSeeInventory, canSeeTransactions, canSeeReports, canSeeCustomers, isAdmin].filter(Boolean).length;
   const totalTabs = 1 + extraTabCount;
 
   // Build the set of top-level tabs this user is allowed to see.
@@ -54,9 +58,10 @@ const Index = () => {
     if (canSeeInventory) s.add("inventory");
     if (canSeeTransactions) s.add("transactions");
     if (canSeeReports) s.add("report");
+    if (canSeeCustomers) s.add("customers");
     if (isAdmin) s.add("users");
     return s;
-  }, [canSeeInventory, canSeeTransactions, canSeeReports, isAdmin]);
+  }, [canSeeInventory, canSeeTransactions, canSeeReports, canSeeCustomers, isAdmin]);
 
   // Read the top-level tab from the URL hash. The hash format is
   // either "#tab" (e.g. "#inventory") or "#tab/sub" (e.g.
@@ -88,13 +93,14 @@ const Index = () => {
   }, [allowedTabs]);
 
   return (
+    <DepartmentProvider>
     <div className="min-h-screen bg-background">
       <Header />
       <main className="container py-6">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
           <TabsList
             className={`grid w-full h-auto p-1 gap-1`}
-            style={{ gridTemplateColumns: `repeat(${Math.min(totalTabs, 5)}, minmax(0, 1fr))` }}
+            style={{ gridTemplateColumns: `repeat(${Math.min(totalTabs, 6)}, minmax(0, 1fr))` }}
           >
             <TabsTrigger value="pos" className="gap-1.5 py-2.5 text-xs sm:text-sm">
               <ShoppingCart className="h-4 w-4" />
@@ -123,6 +129,13 @@ const Index = () => {
               </TabsTrigger>
             )}
 
+            {canSeeCustomers && (
+              <TabsTrigger value="customers" className="gap-1.5 py-2.5 text-xs sm:text-sm">
+                <Wallet className="h-4 w-4" />
+                Customers
+              </TabsTrigger>
+            )}
+
             {isAdmin && (
               <TabsTrigger value="users" className="gap-1.5 py-2.5 text-xs sm:text-sm">
                 <Users className="h-4 w-4" />
@@ -135,6 +148,7 @@ const Index = () => {
           {canSeeInventory && <TabsContent value="inventory"><Inventory /></TabsContent>}
           {canSeeTransactions && <TabsContent value="transactions"><Transactions /></TabsContent>}
           {canSeeReports && <TabsContent value="report"><DailyReport /></TabsContent>}
+          {canSeeCustomers && <TabsContent value="customers"><Customers /></TabsContent>}
           {isAdmin && (
             <TabsContent value="users"><UserManagement /></TabsContent>
           )}
@@ -153,6 +167,7 @@ const Index = () => {
         )}
       </main>
     </div>
+    </DepartmentProvider>
   );
 };
 

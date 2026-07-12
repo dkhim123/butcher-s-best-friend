@@ -1,14 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
+import { OfflineGuard } from "@/components/OfflineGuard";
 import Index from "./pages/Index.tsx";
 import Login from "./pages/Login.tsx";
-import Signup from "./pages/Signup.tsx";
 import Settings from "./pages/Settings.tsx";
+import Businesses from "./pages/admin/Businesses.tsx";
 import AwaitingApproval from "./pages/AwaitingApproval.tsx";
 import NotFound from "./pages/NotFound.tsx";
 
@@ -36,6 +37,7 @@ const queryClient = new QueryClient({
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
+      <OfflineGuard>
       <Toaster />
       <Sonner />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -43,8 +45,19 @@ const App = () => (
           <Routes>
             {/* Public routes */}
             <Route path="/login" element={<Login />} />
-            <Route path="/signup" element={<Signup />} />
+            {/* Public self-signup is gone — the super admin onboards businesses. */}
+            <Route path="/signup" element={<Navigate to="/login" replace />} />
             <Route path="/awaiting-approval" element={<AwaitingApproval />} />
+
+            {/* Platform super-admin console */}
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute requiredRole="super_admin">
+                  <Businesses />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Protected app routes */}
             <Route
@@ -68,6 +81,7 @@ const App = () => (
           </Routes>
         </AuthProvider>
       </BrowserRouter>
+      </OfflineGuard>
     </TooltipProvider>
   </QueryClientProvider>
 );

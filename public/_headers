@@ -1,0 +1,17 @@
+# Security headers for static hosting (Netlify / Cloudflare Pages read this file).
+# For other hosts (Vercel, Nginx, S3+CloudFront) replicate these as response
+# headers. These apply to the DEPLOYED site only — local `npm run dev` is
+# unaffected, so HMR keeps working.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), serial=(self)
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.supabase.co; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; manifest-src 'self'; font-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co
+
+# Never let the browser (or a CDN) cache the service worker or manifest stale.
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache

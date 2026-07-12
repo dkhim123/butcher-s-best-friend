@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { Plus, Pencil, Trash2, Check, X, Boxes, PackagePlus } from "lucide-react";
+import { Plus, Pencil, Trash2, Check, X, Boxes, PackagePlus, Wine } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,13 +12,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { useProducts, useStockOnHand } from "@/lib/butchery-store";
+import { useProducts, useServings, useStockOnHand } from "@/lib/butchery-store";
 import {
+  ACTIVE_DEPARTMENTS,
+  BOTTLE_SIZES_ML,
+  Department,
+  DEPARTMENT_LABELS,
   FOOD_GROUP_LABELS,
   FoodGroup,
   Product,
   ProductType,
 } from "@/lib/butchery-types";
+import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { ksh, qty } from "@/lib/format";
 import { toast } from "sonner";
 
@@ -27,8 +32,20 @@ import { toast } from "sonner";
  * (sales-mode, unit, food-group, should-we-track-stock?) — all of
  * which used to be separate fields on the form. One choice, four
  * sensible defaults. Never wrong.
+ *
+ * The list shown depends on the department:
+ *   Restaurant → a Menu item (sold, not stocked) or an Ingredient
+ *                (stocked raw material — kg / litre / piece).
+ *   Bar        → Beer/soda (whole bottle) or Spirit/wine (bottle;
+ *                serving sizes like tot/glass are added separately).
  */
-type Kind = "meat" | "drink" | "meal" | "other";
+type Kind =
+  | "menu"
+  | "ingredient_kg"
+  | "ingredient_litre"
+  | "ingredient_piece"
+  | "beer"
+  | "spirit";
 
 interface KindMeta {
   label: string;
@@ -40,38 +57,61 @@ interface KindMeta {
 }
 
 const KIND_META: Record<Kind, KindMeta> = {
-  meat: {
-    label: "Meat (sold per kg)",
-    type: "per_kg",
-    unit: "kg",
-    foodGroup: "meat",
-    trackStock: true,
-    pricing: "per kg",
-  },
-  drink: {
-    label: "Drink (per bottle / can)",
-    type: "fixed",
-    unit: "bottle",
-    foodGroup: "drinks",
-    trackStock: true,
-    pricing: "per bottle",
-  },
-  meal: {
-    label: "Meal / plate",
+  menu: {
+    label: "Menu item / plate (sold, not stocked)",
     type: "meal",
     unit: "plate",
     foodGroup: "prepared_food",
     trackStock: false,
     pricing: "per plate",
   },
-  other: {
-    label: "Other item (per piece)",
+  ingredient_kg: {
+    label: "Ingredient — by kg",
+    type: "per_kg",
+    unit: "kg",
+    foodGroup: "raw_material",
+    trackStock: true,
+    pricing: "per kg",
+  },
+  ingredient_litre: {
+    label: "Ingredient — by litre",
+    type: "per_kg",
+    unit: "litre",
+    foodGroup: "raw_material",
+    trackStock: true,
+    pricing: "per litre",
+  },
+  ingredient_piece: {
+    label: "Ingredient — by piece",
     type: "fixed",
     unit: "piece",
-    foodGroup: "groceries",
-    trackStock: false,
+    foodGroup: "raw_material",
+    trackStock: true,
     pricing: "per piece",
   },
+  beer: {
+    label: "Beer / soda (per bottle)",
+    type: "fixed",
+    unit: "bottle",
+    foodGroup: "drinks",
+    trackStock: true,
+    pricing: "per bottle",
+  },
+  spirit: {
+    label: "Spirit / wine (per bottle)",
+    type: "fixed",
+    unit: "bottle",
+    foodGroup: "drinks",
+    trackStock: true,
+    pricing: "per bottle",
+  },
+};
+
+// Which kinds appear for each department.
+const DEPARTMENT_KINDS: Record<Department, Kind[]> = {
+  restaurant: ["menu", "ingredient_kg", "ingredient_litre", "ingredient_piece"],
+  bar: ["beer", "spirit"],
+  rooms: [],
 };
 
 /**
@@ -86,43 +126,83 @@ function deriveCategory(name: string): string {
   return cleaned || "general";
 }
 
-/** Map an existing Product's type back to a Kind (for the edit form). */
+/** Map an existing Product's type back to a Kind (for the type badge). */
 function productToKind(p: Product): Kind {
-  if (p.foodGroup === "meat") return "meat";
-  if (p.foodGroup === "drinks") return "drink";
-  if (p.type === "meal" || p.foodGroup === "prepared_food") return "meal";
-  return "other";
+  if (p.type === "meal" || p.foodGroup === "prepared_food") return "menu";
+  if (p.foodGroup === "drinks") return p.department === "bar" ? "spirit" : "beer";
+  if (p.trackStock) {
+    if (p.unit === "litre") return "ingredient_litre";
+    if (p.unit === "piece") return "ingredient_piece";
+    return "ingredient_kg";
+  }
+  return "menu";
 }
 
 interface NewDraft {
   name: string;
   kind: Kind;
+  department: Department;
   price: string;
   openingStock: string;
+  containerMl: number; // bottle size for spirits
 }
 
-const blankDraft = (): NewDraft => ({
+const blankDraft = (department: Department): NewDraft => ({
   name: "",
-  kind: "meat",
+  kind: DEPARTMENT_KINDS[department][0] ?? "menu",
+  department,
   price: "",
   openingStock: "",
+  containerMl: 750,
 });
 
 export const ProductsManager = () => {
+  const { active: activeDepartment } = useActiveDepartment();
   const { products, add, update, remove } = useProducts();
+  const { forProduct: servingsFor, add: addServing, remove: removeServing } = useServings();
   const { byProductId, addStock } = useStockOnHand();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{ name: string; price: string }>({
     name: "",
     price: "",
   });
-  const [newP, setNewP] = useState<NewDraft>(blankDraft());
+  const [newP, setNewP] = useState<NewDraft>(() => blankDraft(activeDepartment));
+  const [customBottle, setCustomBottle] = useState(false);
+
+  // Only manage the department currently in focus (matches the header switcher),
+  // so the Bar's menu and the Restaurant's menu never bleed together.
+  const deptProducts = products.filter((p) => p.department === activeDepartment);
 
   // Per-card "Add stock" inline form state. Keyed by product id so each card
   // remembers its own open/closed + value independently.
   const [stockForm, setStockForm] = useState<Record<string, string>>({});
   const [stockOpenId, setStockOpenId] = useState<string | null>(null);
   const [addingStock, setAddingStock] = useState<string | null>(null);
+
+  // Per-spirit "Servings" editor state (Tot / Glass / …).
+  const [servingOpenId, setServingOpenId] = useState<string | null>(null);
+  const [servingDraft, setServingDraft] = useState({ name: "", ml: "", price: "" });
+
+  const handleAddServing = async (productId: string) => {
+    const ml = Number(servingDraft.ml);
+    const price = Number(servingDraft.price);
+    if (!servingDraft.name.trim()) return toast.error("Enter a serving name (e.g. Tot)");
+    if (!Number.isFinite(ml) || ml <= 0) return toast.error("Enter the pour size in ml");
+    if (!Number.isFinite(price) || price < 0) return toast.error("Enter a price");
+    try {
+      await addServing({
+        productId,
+        name: servingDraft.name.trim(),
+        volumeMl: ml,
+        price,
+        sort: Math.round(ml),
+      });
+      setServingDraft({ name: "", ml: "", price: "" });
+      toast.success("Serving added");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add serving");
+    }
+  };
 
   const handleAddStock = async (productId: string, unit: string) => {
     const raw = stockForm[productId] ?? "";
@@ -173,10 +253,16 @@ export const ProductsManager = () => {
     toast.success("Updated");
   };
 
-  const handleAdd = () => {
+  const isSpirit = newP.kind === "spirit";
+
+  const handleAdd = async () => {
     const priceNum = Number(newP.price);
     if (!newP.name.trim() || !Number.isFinite(priceNum) || priceNum <= 0) {
       toast.error("Enter a valid name and price");
+      return;
+    }
+    if (isSpirit && (!Number.isFinite(newP.containerMl) || newP.containerMl <= 0)) {
+      toast.error("Enter a valid bottle size in ml");
       return;
     }
     const openingNum = Number(newP.openingStock);
@@ -185,7 +271,7 @@ export const ProductsManager = () => {
         ? openingNum
         : 0;
 
-    add(
+    const created = await add(
       {
         name: newP.name.trim(),
         type: meta.type,
@@ -193,11 +279,30 @@ export const ProductsManager = () => {
         unit: meta.unit,
         category: deriveCategory(newP.name),
         foodGroup: meta.foodGroup,
+        department: newP.department,
         trackStock: meta.trackStock,
+        containerMl: isSpirit ? newP.containerMl : null,
       },
       opening,
     );
-    setNewP(blankDraft());
+
+    // A spirit/wine starts sellable as a full bottle. The user adds smaller
+    // pours (Tot, Glass…) afterwards from the product's Servings editor.
+    if (isSpirit && created) {
+      try {
+        await addServing({
+          productId: created.id,
+          name: "Full bottle",
+          volumeMl: newP.containerMl,
+          price: priceNum,
+          sort: 100,
+        });
+      } catch {
+        /* non-fatal: the product still exists, they can add servings manually */
+      }
+    }
+
+    setNewP(blankDraft(newP.department));
     toast.success(
       opening > 0
         ? `Added — starting with ${opening} ${meta.unit}`
@@ -214,14 +319,37 @@ export const ProductsManager = () => {
 
         {/* Only THREE fields visible by default. A 4th appears
             when the kind is one we track stock for (meat / drinks). */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="space-y-1.5">
             <Label>Name</Label>
             <Input
-              placeholder="e.g. Beef on bone, Coca-Cola 500ml, Pilau"
+              placeholder="e.g. Beef on bone, Tusker 500ml, Pilau"
               value={newP.name}
               onChange={(e) => setNewP({ ...newP, name: e.target.value })}
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Department</Label>
+            <Select
+              value={newP.department}
+              onValueChange={(v) => {
+                const dept = v as Department;
+                // Reset kind to a valid one for the newly chosen department.
+                setNewP({ ...newP, department: dept, kind: DEPARTMENT_KINDS[dept][0] ?? "menu" });
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ACTIVE_DEPARTMENTS.map((d) => (
+                  <SelectItem key={d} value={d}>
+                    {DEPARTMENT_LABELS[d]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-1.5">
@@ -234,7 +362,7 @@ export const ProductsManager = () => {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {(Object.keys(KIND_META) as Kind[]).map((k) => (
+                {DEPARTMENT_KINDS[newP.department].map((k) => (
                   <SelectItem key={k} value={k}>
                     {KIND_META[k].label}
                   </SelectItem>
@@ -243,8 +371,52 @@ export const ProductsManager = () => {
             </Select>
           </div>
 
+          {isSpirit && (
+            <div className="space-y-1.5">
+              <Label>Bottle size</Label>
+              <Select
+                value={
+                  customBottle || !BOTTLE_SIZES_ML.includes(newP.containerMl as (typeof BOTTLE_SIZES_ML)[number])
+                    ? "custom"
+                    : String(newP.containerMl)
+                }
+                onValueChange={(v) => {
+                  if (v === "custom") {
+                    setCustomBottle(true);
+                  } else {
+                    setCustomBottle(false);
+                    setNewP({ ...newP, containerMl: Number(v) });
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BOTTLE_SIZES_ML.map((ml) => (
+                    <SelectItem key={ml} value={String(ml)}>
+                      {ml >= 1000 ? `${ml / 1000} litre` : `${ml} ml`}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="custom">Custom size…</SelectItem>
+                </SelectContent>
+              </Select>
+              {(customBottle ||
+                !BOTTLE_SIZES_ML.includes(newP.containerMl as (typeof BOTTLE_SIZES_ML)[number])) && (
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="Bottle size in ml (e.g. 700)"
+                  value={newP.containerMl || ""}
+                  onChange={(e) => setNewP({ ...newP, containerMl: Number(e.target.value) })}
+                  className="no-spinner mt-1.5"
+                />
+              )}
+            </div>
+          )}
+
           <div className="space-y-1.5">
-            <Label>Price ({meta.pricing})</Label>
+            <Label>Price ({isSpirit ? "per full bottle" : meta.pricing})</Label>
             <Input
               type="number"
               inputMode="decimal"
@@ -295,16 +467,19 @@ export const ProductsManager = () => {
       <Card className="overflow-hidden shadow-soft">
         <div className="p-4 border-b bg-gradient-surface flex items-center justify-between">
           <div>
-            <h3 className="font-semibold">Existing products</h3>
+            <h3 className="font-semibold">
+              {DEPARTMENT_LABELS[activeDepartment]} products
+            </h3>
             <p className="text-xs text-muted-foreground">
-              {products.length} item{products.length === 1 ? "" : "s"} on the menu
+              {deptProducts.length} item{deptProducts.length === 1 ? "" : "s"} on the menu
             </p>
           </div>
         </div>
 
-        {products.length === 0 ? (
+        {deptProducts.length === 0 ? (
           <p className="p-8 text-center text-sm text-muted-foreground">
-            No products yet. Add your first product above to get started.
+            No {DEPARTMENT_LABELS[activeDepartment].toLowerCase()} products yet.
+            Add your first one above to get started.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -319,7 +494,7 @@ export const ProductsManager = () => {
                 </tr>
               </thead>
               <tbody>
-                {products.map((p) => {
+                {deptProducts.map((p) => {
                   const editing = editingId === p.id;
                   const stock = byProductId(p.id);
                   const kind = productToKind(p);
@@ -426,6 +601,24 @@ export const ProductsManager = () => {
                               </>
                             ) : (
                               <>
+                                {p.containerMl != null && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1 text-xs h-8"
+                                    onClick={() =>
+                                      setServingOpenId((id) =>
+                                        id === p.id ? null : p.id,
+                                      )
+                                    }
+                                    title="Serving sizes (Tot / Glass / Bottle)"
+                                  >
+                                    <Wine className="h-3.5 w-3.5" />
+                                    <span className="hidden sm:inline">
+                                      Servings
+                                    </span>
+                                  </Button>
+                                )}
                                 {p.trackStock && (
                                   <Button
                                     size="sm"
@@ -524,6 +717,103 @@ export const ProductsManager = () => {
                                   onClick={() => setStockOpenId(null)}
                                 >
                                   Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+
+                      {/* Servings editor for a spirit/wine — Tot, Glass, etc. */}
+                      {p.containerMl != null && servingOpenId === p.id && !editing && (
+                        <tr className="bg-accent/30">
+                          <td colSpan={5} className="p-3">
+                            <div className="space-y-3">
+                              <div>
+                                <p className="text-xs font-medium mb-1.5">
+                                  How <strong>{p.name}</strong> can be sold
+                                  <span className="text-muted-foreground font-normal">
+                                    {" "}(bottle is {p.containerMl} ml)
+                                  </span>
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                  {servingsFor(p.id).length === 0 ? (
+                                    <span className="text-xs text-muted-foreground">
+                                      No servings yet.
+                                    </span>
+                                  ) : (
+                                    servingsFor(p.id).map((sv) => (
+                                      <Badge
+                                        key={sv.id}
+                                        variant="secondary"
+                                        className="gap-1.5 py-1 pl-2.5 pr-1"
+                                      >
+                                        {sv.name} · {sv.volumeMl}ml · {ksh(sv.price)}
+                                        <button
+                                          type="button"
+                                          onClick={() => removeServing(sv.id)}
+                                          className="rounded-full hover:bg-destructive/20 p-0.5"
+                                          title="Remove serving"
+                                        >
+                                          <X className="h-3 w-3" />
+                                        </button>
+                                      </Badge>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+                                <div className="space-y-1 flex-1">
+                                  <Label className="text-[11px]">Name</Label>
+                                  <Input
+                                    placeholder="Tot / Glass / Quarter"
+                                    value={servingDraft.name}
+                                    onChange={(e) =>
+                                      setServingDraft((s) => ({ ...s, name: e.target.value }))
+                                    }
+                                    className="h-9"
+                                  />
+                                </div>
+                                <div className="space-y-1 w-24">
+                                  <Label className="text-[11px]">Pour (ml)</Label>
+                                  <Input
+                                    type="number"
+                                    inputMode="decimal"
+                                    placeholder="30"
+                                    value={servingDraft.ml}
+                                    onChange={(e) =>
+                                      setServingDraft((s) => ({ ...s, ml: e.target.value }))
+                                    }
+                                    className="h-9 no-spinner"
+                                  />
+                                </div>
+                                <div className="space-y-1 w-28">
+                                  <Label className="text-[11px]">Price</Label>
+                                  <Input
+                                    type="number"
+                                    inputMode="decimal"
+                                    placeholder="150"
+                                    value={servingDraft.price}
+                                    onChange={(e) =>
+                                      setServingDraft((s) => ({ ...s, price: e.target.value }))
+                                    }
+                                    className="h-9 no-spinner"
+                                  />
+                                </div>
+                                <Button
+                                  size="sm"
+                                  className="bg-gradient-primary"
+                                  onClick={() => void handleAddServing(p.id)}
+                                >
+                                  <Plus className="h-4 w-4 mr-1" /> Add
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setServingOpenId(null)}
+                                >
+                                  Done
                                 </Button>
                               </div>
                             </div>

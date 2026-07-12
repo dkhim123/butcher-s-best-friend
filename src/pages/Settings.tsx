@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
+import { DepartmentProvider } from "@/contexts/DepartmentContext";
 import { Header } from "@/components/butchery/Header";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowLeft,
   Building2,
@@ -17,6 +19,7 @@ import {
   Plus,
   Trash2,
   GitBranch,
+  ReceiptText,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -52,6 +55,46 @@ export default function Settings() {
     await refreshSession();
     setSavingName(false);
     toast.success("Business name updated");
+  };
+
+  // ── Receipt details (tagline / phone / address) ───────────────
+  const [tagline, setTagline] = useState(org?.tagline ?? "");
+  const [phone, setPhone] = useState(org?.phone ?? "");
+  const [address, setAddress] = useState(org?.address ?? "");
+  const [mpesaPaybill, setMpesaPaybill] = useState(org?.mpesa_paybill ?? "");
+  const [mpesaTill, setMpesaTill] = useState(org?.mpesa_till ?? "");
+  const [savingReceipt, setSavingReceipt] = useState(false);
+
+  useEffect(() => {
+    setTagline(org?.tagline ?? "");
+    setPhone(org?.phone ?? "");
+    setAddress(org?.address ?? "");
+    setMpesaPaybill(org?.mpesa_paybill ?? "");
+    setMpesaTill(org?.mpesa_till ?? "");
+  }, [org?.id, org?.tagline, org?.phone, org?.address, org?.mpesa_paybill, org?.mpesa_till]);
+
+  const handleSaveReceipt = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!org) return;
+    setSavingReceipt(true);
+    const { error } = await supabase
+      .from("organisations")
+      .update({
+        tagline: tagline.trim() || null,
+        phone: phone.trim() || null,
+        address: address.trim() || null,
+        mpesa_paybill: mpesaPaybill.trim() || null,
+        mpesa_till: mpesaTill.trim() || null,
+      })
+      .eq("id", org.id);
+    if (error) {
+      setSavingReceipt(false);
+      toast.error(error.message);
+      return;
+    }
+    await refreshSession();
+    setSavingReceipt(false);
+    toast.success("Receipt details updated");
   };
 
   // ── Logo Upload ───────────────────────────────────────────────
@@ -194,6 +237,7 @@ export default function Settings() {
   };
 
   return (
+    <DepartmentProvider>
     <div className="min-h-screen bg-background">
       <Header />
       <main className="container py-6 max-w-2xl space-y-6">
@@ -226,6 +270,67 @@ export default function Settings() {
             />
             <Button type="submit" disabled={savingName} className="shrink-0">
               {savingName ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+            </Button>
+          </form>
+        </Card>
+
+        {/* ── Receipt details ── */}
+        <Card className="p-6 shadow-elevated space-y-4">
+          <div className="flex items-center gap-2">
+            <div className="h-9 w-9 rounded-lg bg-gradient-primary grid place-items-center">
+              <ReceiptText className="h-5 w-5 text-primary-foreground" />
+            </div>
+            <div>
+              <h2 className="font-semibold">Receipt Details</h2>
+              <p className="text-xs text-muted-foreground">Printed under your name on every receipt</p>
+            </div>
+          </div>
+          <form onSubmit={handleSaveReceipt} className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Tagline</Label>
+              <Input
+                value={tagline}
+                onChange={(e) => setTagline(e.target.value)}
+                placeholder="Restaurant · Bar · Rooms"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Phone</Label>
+              <Input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="0700 000 000"
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>M-Pesa Paybill</Label>
+                <Input
+                  value={mpesaPaybill}
+                  onChange={(e) => setMpesaPaybill(e.target.value)}
+                  placeholder="e.g. 400200"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>M-Pesa Till / Buy Goods</Label>
+                <Input
+                  value={mpesaTill}
+                  onChange={(e) => setMpesaTill(e.target.value)}
+                  placeholder="e.g. 5200000"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Address</Label>
+              <Textarea
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder="Serena Road, off Mombasa–Malindi Highway, Shanzu"
+                rows={2}
+              />
+            </div>
+            <Button type="submit" disabled={savingReceipt}>
+              {savingReceipt ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save receipt details"}
             </Button>
           </form>
         </Card>
@@ -358,5 +463,6 @@ export default function Settings() {
         </Card>
       </main>
     </div>
+    </DepartmentProvider>
   );
 }

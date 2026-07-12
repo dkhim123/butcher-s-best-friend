@@ -16,9 +16,11 @@ import {
   Sparkles,
   Truck,
   ShoppingBag,
+  ChefHat,
   History as HistoryIcon,
 } from "lucide-react";
-import { useStockMovements, StockMovementRow } from "@/lib/butchery-store";
+import { useProducts, useStockMovements, StockMovementRow } from "@/lib/butchery-store";
+import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { qty } from "@/lib/format";
 
 /**
@@ -45,26 +47,36 @@ const REASON_META: Record<
   opening: { label: "Opening", Icon: Sparkles, tone: "in" },
   purchase: { label: "Purchase", Icon: Truck, tone: "in" },
   sale: { label: "Sale", Icon: ShoppingBag, tone: "out" },
+  usage: { label: "Kitchen use", Icon: ChefHat, tone: "out" },
   waste: { label: "Waste", Icon: AlertCircle, tone: "out" },
   adjustment: { label: "Adjustment", Icon: HistoryIcon, tone: "neutral" },
 };
 
 export const StockMovementsLog = () => {
+  const { active: activeDepartment } = useActiveDepartment();
+  const { products } = useProducts();
   const { rows, isLoading } = useStockMovements(300);
 
   const [search, setSearch] = useState("");
   const [reasonFilter, setReasonFilter] = useState<"all" | StockMovementRow["reason"]>("all");
+
+  // Only show movements for products in the department in focus.
+  const deptProductIds = useMemo(
+    () => new Set(products.filter((p) => p.department === activeDepartment).map((p) => p.id)),
+    [products, activeDepartment],
+  );
 
   // In-memory filter. We don't filter in the DB because the result set
   // is small (capped at 300 rows) and client-side filtering is instant.
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     return rows.filter((r) => {
+      if (!deptProductIds.has(r.productId)) return false;
       if (reasonFilter !== "all" && r.reason !== reasonFilter) return false;
       if (term && !r.productName.toLowerCase().includes(term)) return false;
       return true;
     });
-  }, [rows, reasonFilter, search]);
+  }, [rows, deptProductIds, reasonFilter, search]);
 
   // Roll-up at the top: total in, total out, net for the visible rows.
   // This is a quick "where is my stock going?" sanity check.
@@ -123,6 +135,7 @@ export const StockMovementsLog = () => {
                   <SelectItem value="opening">Opening</SelectItem>
                   <SelectItem value="purchase">Purchase</SelectItem>
                   <SelectItem value="sale">Sale</SelectItem>
+                  <SelectItem value="usage">Kitchen use</SelectItem>
                   <SelectItem value="adjustment">Adjustment</SelectItem>
                   <SelectItem value="waste">Waste</SelectItem>
                 </SelectContent>

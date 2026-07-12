@@ -9,7 +9,8 @@ type Role = Profile["role"];
 
 export interface Session {
   profile: Profile;
-  org: Organisation;
+  // Null for the platform super_admin, who has no business of their own.
+  org: Organisation | null;
   branch: Branch | null;
 }
 
@@ -21,12 +22,6 @@ interface AuthContextValue {
   isLoading: boolean;
   hasPermission: (key: keyof UserPermissions) => boolean;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
-  signUp: (
-    email: string,
-    password: string,
-    fullName: string,
-    businessName: string,
-  ) => Promise<{ error: string | null }>;
   createUser: (params: {
     email: string;
     password: string;
@@ -39,6 +34,25 @@ interface AuthContextValue {
     userId: string,
     permissions: UserPermissions,
   ) => Promise<{ error: string | null }>;
+  /** Super-admin only: onboard a new business (org + its first admin). */
+  registerBusiness: (params: {
+    email: string;
+    password: string;
+    fullName: string;
+    businessName: string;
+    tagline?: string;
+    phone?: string;
+    address?: string;
+    mpesaPaybill?: string;
+    mpesaTill?: string;
+  }) => Promise<{ error: string | null }>;
+  /** Super-admin only: suspend or restore a business. */
+  setBusinessActive: (orgId: string, active: boolean) => Promise<{ error: string | null }>;
+  /**
+   * Reset another user's password immediately (super-admin → anyone; business
+   * admin → a user in their own org). Also clears any brute-force lockout.
+   */
+  resetPassword: (email: string, newPassword: string) => Promise<{ error: string | null }>;
   /**
    * Re-fetches the current org, branch, and profile from the database
    * and updates both React state AND localStorage. Call this after any
@@ -50,16 +64,50 @@ interface AuthContextValue {
 }
 
 export const SESSION_KEY = "spot_butchery_session";
+// When the current session was established. Sessions auto-expire so a device
+// left logged in (or a stolen localStorage session) stops working after a day.
+const SESSION_ISSUED_KEY = "spot_butchery_session_issued_at";
+// Absolute session lifetime — a device stays signed in up to this long between
+// logins. Set generously so staff aren't nagged during a working day.
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// Idle timeout — if the app sits untouched this long, it signs out. Any tap /
+// key / touch resets it, so an in-use POS never logs out on its own.
+const IDLE_LOGOUT_MS = 3 * 60 * 60 * 1000; // 3 hours of no interaction
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+function stampSessionIssued() {
+  try {
+    localStorage.setItem(SESSION_ISSUED_KEY, String(Date.now()));
+  } catch {
+    /* storage disabled — session simply won't persist */
+  }
+}
+
+function clearSessionStorage() {
+  localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(SESSION_ISSUED_KEY);
+}
 
 function loadSession(): Session | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
+
+    // Expire old sessions. A missing timestamp is treated as expired so
+    // pre-upgrade sessions are re-authenticated once.
+    const issued = Number(localStorage.getItem(SESSION_ISSUED_KEY) ?? 0);
+    if (!issued || Date.now() - issued > SESSION_MAX_AGE_MS) {
+      clearSessionStorage();
+      return null;
+    }
+
     const s = JSON.parse(raw) as Session;
-    if (!s.profile?.email || !s.org?.id) {
-      localStorage.removeItem(SESSION_KEY);
+    // Every session needs a profile. A business session also needs an org;
+    // the platform super_admin legitimately has none.
+    const isSuperAdmin = s.profile?.role === "super_admin";
+    if (!s.profile?.email || (!isSuperAdmin && !s.org?.id)) {
+      clearSessionStorage();
       return null;
     }
     return s;
@@ -166,7 +214,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const persist = (s: Session | null) => {
     setSession(s);
     if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-    else localStorage.removeItem(SESSION_KEY);
+    else clearSessionStorage();
+    // NB: we do NOT stamp the issued-at time here — refreshSession() calls
+    // persist() on every mount, and re-stamping would make the session never
+    // expire. The timestamp is set only at real login/signup (stampSessionIssued).
   };
 
   const hasPermission = (key: keyof UserPermissions): boolean => {
@@ -195,46 +246,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const payload = data as {
       profile: Profile;
-      org: Organisation;
+      org: Organisation | null;
       branch: Branch | null;
     };
+
+    // Platform super_admin: no org, no branch — go straight to a bare session.
+    if (payload.profile.role === "super_admin") {
+      persist({ profile: payload.profile, org: null, branch: null });
+      stampSessionIssued();
+      return { error: null };
+    }
 
     if (!payload.org?.id) return { error: "Organisation not found" };
 
-    const session = await hydrateSessionFromDb(payload);
-    persist(session);
-    return { error: null };
-  };
-
-  // ── signUp ──────────────────────────────────────────────────
-  // Delegates atomic org+branch+admin creation to register_user().
-  // Runs in a single DB transaction — no half-created accounts.
-  const signUp = async (
-    email: string,
-    password: string,
-    fullName: string,
-    businessName: string,
-  ) => {
-    const { data, error } = await supabase.rpc("register_first_admin", {
-      p_email: normaliseEmail(email),
-      p_password: password,
-      p_full_name: fullName,
-      p_business_name: businessName,
+    const session = await hydrateSessionFromDb({
+      profile: payload.profile,
+      org: payload.org,
+      branch: payload.branch,
     });
-
-    if (error) return { error: error.message };
-    if (!data) return { error: "Failed to create account" };
-
-    const payload = data as {
-      profile: Profile;
-      org: Organisation;
-      branch: Branch | null;
-    };
-
-    const session = await hydrateSessionFromDb(payload);
     persist(session);
+    stampSessionIssued();
     return { error: null };
   };
+
 
   // ── createUser (admin → adds staff) ─────────────────────────
   // Password is hashed server-side via register_staff_user() so
@@ -300,6 +334,70 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: null };
   };
 
+  // ── registerBusiness (super_admin → onboards a business) ────
+  // Delegates atomic org + Main Branch + admin creation to the
+  // register_business() RPC. The server verifies the caller is a
+  // super_admin via p_actor_id.
+  const registerBusiness = async (params: {
+    email: string;
+    password: string;
+    fullName: string;
+    businessName: string;
+    tagline?: string;
+    phone?: string;
+    address?: string;
+    mpesaPaybill?: string;
+    mpesaTill?: string;
+  }) => {
+    if (!session) return { error: "Not authenticated" };
+    if (session.profile.role !== "super_admin") {
+      return { error: "Only a super admin can register a business" };
+    }
+    if (params.password.length < 8) {
+      return { error: "Password must be at least 8 characters" };
+    }
+    const { error } = await supabase.rpc("register_business", {
+      p_actor_id: session.profile.id,
+      p_email: normaliseEmail(params.email),
+      p_password: params.password,
+      p_full_name: params.fullName.trim(),
+      p_business_name: params.businessName.trim(),
+      p_tagline: params.tagline?.trim() || null,
+      p_phone: params.phone?.trim() || null,
+      p_address: params.address?.trim() || null,
+      p_mpesa_paybill: params.mpesaPaybill?.trim() || null,
+      p_mpesa_till: params.mpesaTill?.trim() || null,
+    });
+    if (error) return { error: error.message };
+    return { error: null };
+  };
+
+  const setBusinessActive = async (orgId: string, active: boolean) => {
+    if (!session) return { error: "Not authenticated" };
+    if (session.profile.role !== "super_admin") {
+      return { error: "Only a super admin can change business status" };
+    }
+    const { error } = await supabase.rpc("set_business_active", {
+      p_actor_id: session.profile.id,
+      p_org_id: orgId,
+      p_active: active,
+    });
+    if (error) return { error: error.message };
+    return { error: null };
+  };
+
+  const resetPassword = async (email: string, newPassword: string) => {
+    if (!session) return { error: "Not authenticated" };
+    if (newPassword.length < 8) return { error: "Password must be at least 8 characters" };
+    const { error } = await supabase.rpc("reset_staff_password", {
+      p_actor_id: session.profile.id,
+      p_email: normaliseEmail(email),
+      p_password: newPassword,
+    });
+    if (error) return { error: error.message };
+    return { error: null };
+  };
+
   // ── refreshSession ──────────────────────────────────────────
   // Pulls the latest org / branch / profile rows from the DB and
   // overwrites both React state AND localStorage. Run this after
@@ -308,6 +406,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // and every other consumer of useAuth() re-renders immediately.
   const refreshSession = async () => {
     if (!session) return;
+    // super_admin has no org/branch to refresh.
+    if (session.profile.role === "super_admin" || !session.org) return;
 
     const [{ data: org, error: orgErr },
            { data: branch, error: branchErr },
@@ -391,6 +491,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = () => persist(null);
 
+  // ── Idle auto-logout ────────────────────────────────────────
+  // On a shared till, walking away shouldn't leave the session open. After
+  // IDLE_LOGOUT_MS with no interaction we sign out. Any tap/click/keypress
+  // resets the timer, so an actively-used POS never logs out mid-service.
+  useEffect(() => {
+    if (!session) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => persist(null), IDLE_LOGOUT_MS);
+    };
+    const events: (keyof WindowEventMap)[] = [
+      "mousedown",
+      "keydown",
+      "touchstart",
+      "pointerdown",
+      "visibilitychange",
+    ];
+    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
+    reset();
+    return () => {
+      clearTimeout(timer);
+      events.forEach((e) => window.removeEventListener(e, reset));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.profile?.id]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -401,9 +528,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoading,
         hasPermission,
         signIn,
-        signUp,
         createUser,
         updatePermissions,
+        registerBusiness,
+        setBusinessActive,
+        resetPassword,
         refreshSession,
         signOut,
       }}

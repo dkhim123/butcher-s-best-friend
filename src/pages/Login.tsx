@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
-import { Beef, Loader2 } from "lucide-react";
+import { Hotel, Loader2 } from "lucide-react";
+import { InstallButton } from "@/components/InstallButton";
 import { toast } from "sonner";
 
 export default function Login() {
@@ -35,12 +36,12 @@ export default function Login() {
         {/* Brand */}
         <div className="flex flex-col items-center gap-3">
           <div className="h-14 w-14 rounded-2xl bg-gradient-primary grid place-items-center shadow-elevated">
-            <Beef className="h-8 w-8 text-primary-foreground" />
+            <Hotel className="h-8 w-8 text-primary-foreground" />
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-bold tracking-tight">Spot Butchery</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Decent microsystem</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Sign in to your business account
+              Sign in to your account
             </p>
           </div>
         </div>
@@ -77,12 +78,13 @@ export default function Login() {
           </form>
         </Card>
 
-        <p className="text-center text-sm text-muted-foreground">
-          No account yet?{" "}
-          <Link to="/signup" className="text-primary font-medium hover:underline">
-            Create one
-          </Link>
+        <p className="text-center text-xs text-muted-foreground">
+          Forgot your password? Ask your manager or administrator to set a new one.
         </p>
+
+        <div className="flex justify-center">
+          <InstallButton />
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,8 @@
 export type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
 
-export type UserRole = "admin" | "manager" | "cashier" | "pending";
+export type UserRole = "super_admin" | "admin" | "manager" | "cashier" | "pending";
+
+export type Department = "restaurant" | "bar" | "rooms";
 
 export type FoodGroup =
   | "meat"
@@ -18,6 +20,12 @@ export interface UserPermissions {
   can_view_products?: boolean;
   can_view_stock?: boolean;
   can_manage_credit?: boolean;
+  /**
+   * Which departments a cashier is allowed to work in. Empty/undefined for
+   * admin & manager, who implicitly see every department. A Bar cashier is
+   * {"departments": ["bar"]} and only ever sees Bar products/reports.
+   */
+  departments?: Department[];
 }
 
 export interface Database {
@@ -28,18 +36,36 @@ export interface Database {
           id: string;
           name: string;
           logo_url: string | null;
+          tagline: string | null;
+          phone: string | null;
+          address: string | null;
+          mpesa_paybill: string | null;
+          mpesa_till: string | null;
+          active: boolean;
           created_at: string;
         };
         Insert: {
           id?: string;
           name: string;
           logo_url?: string | null;
+          tagline?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          mpesa_paybill?: string | null;
+          mpesa_till?: string | null;
+          active?: boolean;
           created_at?: string;
         };
         Update: {
           id?: string;
           name?: string;
           logo_url?: string | null;
+          tagline?: string | null;
+          phone?: string | null;
+          address?: string | null;
+          mpesa_paybill?: string | null;
+          mpesa_till?: string | null;
+          active?: boolean;
           created_at?: string;
         };
       };
@@ -108,7 +134,9 @@ export interface Database {
           unit: string;
           category: string | null;
           food_group: FoodGroup | null;
+          department: Department;
           track_stock: boolean;
+          container_ml: number | null;
           created_at: string;
         };
         Insert: {
@@ -120,7 +148,9 @@ export interface Database {
           unit: string;
           category?: string | null;
           food_group?: FoodGroup | null;
+          department?: Department;
           track_stock?: boolean;
+          container_ml?: number | null;
           created_at?: string;
         };
         Update: {
@@ -132,7 +162,41 @@ export interface Database {
           unit?: string;
           category?: string | null;
           food_group?: FoodGroup | null;
+          department?: Department;
           track_stock?: boolean;
+          container_ml?: number | null;
+          created_at?: string;
+        };
+      };
+      product_servings: {
+        Row: {
+          id: string;
+          org_id: string;
+          product_id: string;
+          name: string;
+          volume_ml: number;
+          price: number;
+          sort: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          product_id: string;
+          name: string;
+          volume_ml: number;
+          price: number;
+          sort?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          product_id?: string;
+          name?: string;
+          volume_ml?: number;
+          price?: number;
+          sort?: number;
           created_at?: string;
         };
       };
@@ -143,7 +207,7 @@ export interface Database {
           branch_id: string;
           product_id: string;
           delta_qty: number;
-          reason: "purchase" | "sale" | "waste" | "adjustment" | "opening";
+          reason: "purchase" | "sale" | "waste" | "adjustment" | "opening" | "usage";
           ref_table: string | null;
           ref_id: string | null;
           note: string | null;
@@ -156,7 +220,7 @@ export interface Database {
           branch_id: string;
           product_id: string;
           delta_qty: number;
-          reason: "purchase" | "sale" | "waste" | "adjustment" | "opening";
+          reason: "purchase" | "sale" | "waste" | "adjustment" | "opening" | "usage";
           ref_table?: string | null;
           ref_id?: string | null;
           note?: string | null;
@@ -212,11 +276,12 @@ export interface Database {
           org_id: string;
           branch_id: string;
           date: string;
+          department: string | null;
           product_id: string | null;
           supplier: string;
-          quantity: number;
-          cost_per_unit: number;
-          total_cost: number;
+          quantity: number | null;
+          cost_per_unit: number | null;
+          total_cost: number | null;
           notes: string | null;
           received: boolean;
           created_by: string | null;
@@ -226,12 +291,13 @@ export interface Database {
           id?: string;
           org_id: string;
           branch_id: string;
-          date: string;
+          date?: string;
+          department?: string | null;
           product_id?: string | null;
           supplier: string;
-          quantity: number;
-          cost_per_unit: number;
-          total_cost: number;
+          quantity?: number | null;
+          cost_per_unit?: number | null;
+          total_cost?: number | null;
           notes?: string | null;
           received?: boolean;
           created_by?: string | null;
@@ -242,15 +308,141 @@ export interface Database {
           org_id?: string;
           branch_id?: string;
           date?: string;
+          department?: string | null;
           product_id?: string | null;
           supplier?: string;
-          quantity?: number;
-          cost_per_unit?: number;
-          total_cost?: number;
+          quantity?: number | null;
+          cost_per_unit?: number | null;
+          total_cost?: number | null;
           notes?: string | null;
           received?: boolean;
           created_by?: string | null;
           created_at?: string;
+        };
+      };
+      purchase_order_items: {
+        Row: {
+          id: string;
+          po_id: string;
+          product_id: string | null;
+          quantity: number;
+          cost_per_unit: number;
+          amount: number;
+        };
+        Insert: {
+          id?: string;
+          po_id: string;
+          product_id?: string | null;
+          quantity: number;
+          cost_per_unit: number;
+          amount?: number;
+        };
+        Update: {
+          id?: string;
+          po_id?: string;
+          product_id?: string | null;
+          quantity?: number;
+          cost_per_unit?: number;
+          amount?: number;
+        };
+      };
+      stock_takes: {
+        Row: {
+          id: string;
+          org_id: string;
+          branch_id: string;
+          department: string | null;
+          status: "draft" | "final";
+          note: string | null;
+          taken_by: string | null;
+          created_at: string;
+          finalized_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          branch_id: string;
+          department?: string | null;
+          status?: "draft" | "final";
+          note?: string | null;
+          taken_by?: string | null;
+          created_at?: string;
+          finalized_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          branch_id?: string;
+          department?: string | null;
+          status?: "draft" | "final";
+          note?: string | null;
+          taken_by?: string | null;
+          created_at?: string;
+          finalized_at?: string | null;
+        };
+      };
+      stock_take_items: {
+        Row: {
+          id: string;
+          stock_take_id: string;
+          product_id: string;
+          counted_qty: number;
+          system_qty: number | null;
+        };
+        Insert: {
+          id?: string;
+          stock_take_id: string;
+          product_id: string;
+          counted_qty: number;
+          system_qty?: number | null;
+        };
+        Update: {
+          id?: string;
+          stock_take_id?: string;
+          product_id?: string;
+          counted_qty?: number;
+          system_qty?: number | null;
+        };
+      };
+      shifts: {
+        Row: {
+          id: string;
+          org_id: string;
+          branch_id: string;
+          cashier_id: string;
+          opened_at: string;
+          closed_at: string | null;
+          opening_float: number;
+          expected_cash: number | null;
+          counted_cash: number | null;
+          status: "open" | "closed";
+          note: string | null;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          branch_id: string;
+          cashier_id: string;
+          opened_at?: string;
+          closed_at?: string | null;
+          opening_float?: number;
+          expected_cash?: number | null;
+          counted_cash?: number | null;
+          status?: "open" | "closed";
+          note?: string | null;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          branch_id?: string;
+          cashier_id?: string;
+          opened_at?: string;
+          closed_at?: string | null;
+          opening_float?: number;
+          expected_cash?: number | null;
+          counted_cash?: number | null;
+          status?: "open" | "closed";
+          note?: string | null;
         };
       };
       sales: {
@@ -260,15 +452,18 @@ export interface Database {
           branch_id: string;
           receipt_no: string;
           date: string;
-          payment: "cash" | "mpesa" | "credit";
+          payment: "cash" | "mpesa" | "credit" | "split";
+          payments: Json;
           subtotal: number;
           cash_given: number | null;
           change_amount: number | null;
           mpesa_ref: string | null;
           customer_name: string | null;
           customer_phone: string | null;
+          customer_id: string | null;
           paid: boolean;
           created_by: string | null;
+          shift_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -277,15 +472,18 @@ export interface Database {
           branch_id: string;
           receipt_no: string;
           date: string;
-          payment: "cash" | "mpesa" | "credit";
+          payment: "cash" | "mpesa" | "credit" | "split";
+          payments?: Json;
           subtotal: number;
           cash_given?: number | null;
           change_amount?: number | null;
           mpesa_ref?: string | null;
           customer_name?: string | null;
           customer_phone?: string | null;
+          customer_id?: string | null;
           paid?: boolean;
           created_by?: string | null;
+          shift_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -294,17 +492,94 @@ export interface Database {
           branch_id?: string;
           receipt_no?: string;
           date?: string;
-          payment?: "cash" | "mpesa" | "credit";
+          payment?: "cash" | "mpesa" | "credit" | "split";
+          payments?: Json;
           subtotal?: number;
           cash_given?: number | null;
           change_amount?: number | null;
           mpesa_ref?: string | null;
           customer_name?: string | null;
           customer_phone?: string | null;
+          customer_id?: string | null;
           paid?: boolean;
+          created_by?: string | null;
+          shift_id?: string | null;
+          created_at?: string;
+        };
+      };
+      customers: {
+        Row: {
+          id: string;
+          org_id: string;
+          name: string;
+          phone: string | null;
+          note: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          name: string;
+          phone?: string | null;
+          note?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          name?: string;
+          phone?: string | null;
+          note?: string | null;
+          created_at?: string;
+        };
+      };
+      customer_payments: {
+        Row: {
+          id: string;
+          org_id: string;
+          branch_id: string | null;
+          customer_id: string;
+          amount: number;
+          method: "cash" | "mpesa" | "other";
+          note: string | null;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          org_id: string;
+          branch_id?: string | null;
+          customer_id: string;
+          amount: number;
+          method?: "cash" | "mpesa" | "other";
+          note?: string | null;
           created_by?: string | null;
           created_at?: string;
         };
+        Update: {
+          id?: string;
+          org_id?: string;
+          branch_id?: string | null;
+          customer_id?: string;
+          amount?: number;
+          method?: "cash" | "mpesa" | "other";
+          note?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+        };
+      };
+      v_customer_balances: {
+        Row: {
+          customer_id: string;
+          org_id: string;
+          name: string;
+          phone: string | null;
+          owed: number;
+          repaid: number;
+          balance: number;
+        };
+        Insert: never;
+        Update: never;
       };
       sale_items: {
         Row: {
@@ -314,6 +589,8 @@ export interface Database {
           quantity: number;
           unit_price: number;
           amount: number;
+          serving_name: string | null;
+          serving_ml: number | null;
         };
         Insert: {
           id?: string;
@@ -322,6 +599,8 @@ export interface Database {
           quantity: number;
           unit_price: number;
           amount: number;
+          serving_name?: string | null;
+          serving_ml?: number | null;
         };
         Update: {
           id?: string;
@@ -330,6 +609,8 @@ export interface Database {
           quantity?: number;
           unit_price?: number;
           amount?: number;
+          serving_name?: string | null;
+          serving_ml?: number | null;
         };
       };
       receipt_counter: {
@@ -348,18 +629,48 @@ export interface Database {
           branch: Database["public"]["Tables"]["branches"]["Row"] | null;
         } | null;
       };
-      register_first_admin: {
+      register_business: {
         Args: {
+          p_actor_id: string;
           p_email: string;
           p_password: string;
           p_full_name: string;
           p_business_name: string;
+          p_tagline?: string | null;
+          p_phone?: string | null;
+          p_address?: string | null;
+          p_mpesa_paybill?: string | null;
+          p_mpesa_till?: string | null;
         };
         Returns: {
-          profile: Database["public"]["Tables"]["profiles"]["Row"];
           org: Database["public"]["Tables"]["organisations"]["Row"];
-          branch: Database["public"]["Tables"]["branches"]["Row"] | null;
+          admin: { id: string; email: string; full_name: string | null; role: UserRole };
         } | null;
+      };
+      set_business_active: {
+        Args: { p_actor_id: string; p_org_id: string; p_active: boolean };
+        Returns: null;
+      };
+      reset_staff_password: {
+        Args: { p_actor_id: string; p_email: string; p_password: string };
+        Returns: null;
+      };
+      finalize_stock_take: {
+        Args: { p_stock_take_id: string };
+        Returns: null;
+      };
+      open_shift: {
+        Args: {
+          p_org_id: string;
+          p_branch_id: string;
+          p_cashier_id: string;
+          p_opening_float?: number;
+        };
+        Returns: Database["public"]["Tables"]["shifts"]["Row"];
+      };
+      close_shift: {
+        Args: { p_shift_id: string; p_counted_cash?: number | null; p_note?: string | null };
+        Returns: Database["public"]["Tables"]["shifts"]["Row"];
       };
       report_sales_by_category: {
         Args: {
@@ -367,6 +678,7 @@ export interface Database {
           p_branch_id?: string | null;
           p_from?: string;
           p_to?: string;
+          p_department?: string | null;
         };
         Returns: Array<{
           category: string;
@@ -382,6 +694,7 @@ export interface Database {
           p_branch_id?: string | null;
           p_from?: string;
           p_to?: string;
+          p_department?: string | null;
         };
         Returns: Array<{
           food_group: string;

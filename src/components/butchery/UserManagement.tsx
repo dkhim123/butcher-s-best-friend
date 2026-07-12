@@ -16,9 +16,16 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Users, Loader2, RefreshCw, UserPlus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Users, Loader2, RefreshCw, UserPlus, Trash2, ChevronDown, ChevronUp, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
+import { ACTIVE_DEPARTMENTS, Department, DEPARTMENT_LABELS } from "@/lib/butchery-types";
 
 type Profile = Database["public"]["Tables"]["profiles"]["Row"];
 type Branch = Database["public"]["Tables"]["branches"]["Row"];
@@ -35,6 +42,7 @@ const PERMISSION_LABELS: { key: keyof UserPermissions; label: string; desc: stri
 ];
 
 const ROLE_LABELS: Record<Role, string> = {
+  super_admin: "Super Admin",
   admin: "Admin",
   manager: "Manager",
   cashier: "Cashier",
@@ -42,6 +50,7 @@ const ROLE_LABELS: Record<Role, string> = {
 };
 
 const ROLE_COLORS: Record<Role, string> = {
+  super_admin: "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300 border-rose-200",
   admin: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 border-purple-200",
   manager: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border-blue-200",
   cashier: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 border-green-200",
@@ -49,7 +58,7 @@ const ROLE_COLORS: Record<Role, string> = {
 };
 
 export const UserManagement = () => {
-  const { profile: currentUser, org, createUser, updatePermissions } = useAuth();
+  const { profile: currentUser, org, createUser, updatePermissions, resetPassword } = useAuth();
   const orgId = org?.id ?? "";
 
   const [users, setUsers] = useState<Profile[]>([]);
@@ -58,6 +67,23 @@ export const UserManagement = () => {
   const [saving, setSaving] = useState<string | null>(null);
   const [expandedPerms, setExpandedPerms] = useState<string | null>(null);
 
+  // Password reset dialog
+  const [resetUser, setResetUser] = useState<Profile | null>(null);
+  const [resetPwd, setResetPwd] = useState("");
+  const [resetting, setResetting] = useState(false);
+
+  const doReset = async () => {
+    if (!resetUser) return;
+    if (resetPwd.length < 8) { toast.error("Password must be at least 8 characters"); return; }
+    setResetting(true);
+    const { error } = await resetPassword(resetUser.email, resetPwd);
+    setResetting(false);
+    if (error) { toast.error(error); return; }
+    toast.success(`Password reset for ${resetUser.full_name ?? resetUser.email}`);
+    setResetUser(null);
+    setResetPwd("");
+  };
+
   // Create form
   const [creating, setCreating] = useState(false);
   const [newFullName, setNewFullName] = useState("");
@@ -65,6 +91,13 @@ export const UserManagement = () => {
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<"admin" | "manager" | "cashier">("cashier");
   const [newBranchId, setNewBranchId] = useState<string>("none");
+  // Which departments a new cashier may work in. Restaurant by default.
+  const [newDepartments, setNewDepartments] = useState<Department[]>(["restaurant"]);
+
+  const toggleNewDepartment = (d: Department, on: boolean) =>
+    setNewDepartments((prev) =>
+      on ? Array.from(new Set([...prev, d])) : prev.filter((x) => x !== d),
+    );
 
   const fetchData = async () => {
     if (!orgId) return;
@@ -108,6 +141,10 @@ export const UserManagement = () => {
       toast.error("Cashiers and managers must be assigned to a branch");
       return;
     }
+    if (newRole === "cashier" && newDepartments.length === 0) {
+      toast.error("Pick at least one department for the cashier");
+      return;
+    }
 
     setCreating(true);
     const { error } = await createUser({
@@ -116,7 +153,8 @@ export const UserManagement = () => {
       fullName: newFullName.trim(),
       role: newRole,
       branchId: newBranchId === "none" ? null : newBranchId,
-      permissions: {},
+      // Only cashiers are department-scoped; managers/admins see everything.
+      permissions: newRole === "cashier" ? { departments: newDepartments } : {},
     });
     setCreating(false);
 
@@ -129,6 +167,7 @@ export const UserManagement = () => {
       setNewPassword("");
       setNewRole("cashier");
       setNewBranchId("none");
+      setNewDepartments(["restaurant"]);
       fetchData();
     }
   };
@@ -147,6 +186,22 @@ export const UserManagement = () => {
     } else {
       toast.success("Role updated");
       setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role } : u)));
+    }
+  };
+
+  const handleDepartmentToggle = async (user: Profile, dept: Department, on: boolean) => {
+    const current = user.permissions.departments ?? [];
+    const next = on
+      ? Array.from(new Set([...current, dept]))
+      : current.filter((d) => d !== dept);
+    const updated: UserPermissions = { ...user.permissions, departments: next };
+    setSaving(user.id);
+    const { error } = await updatePermissions(user.id, updated);
+    setSaving(null);
+    if (error) {
+      toast.error("Failed to update departments: " + error);
+    } else {
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, permissions: updated } : u)));
     }
   };
 
@@ -219,7 +274,7 @@ export const UserManagement = () => {
             <Input
               id="new-email"
               type="email"
-              placeholder="jane@spotbutchery.com"
+              placeholder="jane@business.co.ke"
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
               required
@@ -266,6 +321,26 @@ export const UserManagement = () => {
               </SelectContent>
             </Select>
           </div>
+
+          {newRole === "cashier" && (
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Departments this cashier works in</Label>
+              <div className="flex flex-wrap gap-3 rounded-md border bg-muted/30 p-3">
+                {ACTIVE_DEPARTMENTS.map((d) => (
+                  <label key={d} className="flex items-center gap-2 cursor-pointer text-sm">
+                    <Checkbox
+                      checked={newDepartments.includes(d)}
+                      onCheckedChange={(c) => toggleNewDepartment(d, !!c)}
+                    />
+                    {DEPARTMENT_LABELS[d]}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                A Bar cashier only sees Bar products; a Restaurant cashier only sees food.
+              </p>
+            </div>
+          )}
 
           <div className="sm:col-span-2">
             <Button type="submit" disabled={creating} className="gap-2">
@@ -365,6 +440,15 @@ export const UserManagement = () => {
                           <Button
                             variant="ghost"
                             size="icon"
+                            className="h-8 w-8"
+                            title="Reset password"
+                            onClick={() => { setResetUser(u); setResetPwd(""); }}
+                          >
+                            <KeyRound className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             className="h-8 w-8 text-destructive hover:text-destructive"
                             disabled={saving === u.id}
                             onClick={() => deleteUser(u.id, u.full_name ?? u.email ?? "")}
@@ -377,7 +461,24 @@ export const UserManagement = () => {
                   </div>
 
                   {isCashier && showPerms && (
-                    <div className="border-t bg-muted/30 p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="border-t bg-muted/30 p-4 space-y-4">
+                      <div>
+                        <p className="text-sm font-medium mb-2">Departments</p>
+                        <div className="flex flex-wrap gap-4">
+                          {ACTIVE_DEPARTMENTS.map((d) => (
+                            <label key={d} className="flex items-center gap-2 cursor-pointer text-sm">
+                              <Checkbox
+                                checked={(u.permissions.departments ?? ["restaurant"]).includes(d)}
+                                disabled={saving === u.id}
+                                onCheckedChange={(c) => handleDepartmentToggle(u, d, !!c)}
+                              />
+                              {DEPARTMENT_LABELS[d]}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <Separator />
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {PERMISSION_LABELS.map(({ key, label, desc }) => (
                         <label
                           key={key}
@@ -397,6 +498,7 @@ export const UserManagement = () => {
                           </div>
                         </label>
                       ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -413,6 +515,33 @@ export const UserManagement = () => {
           <p><strong>Suspended</strong> — account disabled, cannot sign in</p>
         </div>
       </Card>
+
+      {/* Reset password dialog */}
+      <Dialog open={!!resetUser} onOpenChange={(o) => !o && setResetUser(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Reset password</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground -mt-1">
+            Set a new password for{" "}
+            <strong>{resetUser?.full_name ?? resetUser?.email}</strong>. Tell it to
+            them — they can sign in immediately and change it later.
+          </p>
+          <div className="space-y-1.5 mt-2">
+            <Label>New password</Label>
+            <PasswordInput
+              placeholder="Min 8 characters"
+              value={resetPwd}
+              onChange={(e) => setResetPwd(e.target.value)}
+              minLength={8}
+              onKeyDown={(e) => { if (e.key === "Enter") void doReset(); }}
+            />
+          </div>
+          <Button onClick={doReset} disabled={resetting} className="w-full mt-2">
+            {resetting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Reset password"}
+          </Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

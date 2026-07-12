@@ -13,9 +13,13 @@ interface Props {
   autoPrint?: boolean;
   shopName?: string;
   logoUrl?: string | null;
+  tagline?: string | null;
+  phone?: string | null;
+  mpesaPaybill?: string | null;
+  mpesaTill?: string | null;
 }
 
-export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopName, logoUrl }: Props) => {
+export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopName, logoUrl, tagline, phone, mpesaPaybill, mpesaTill }: Props) => {
   const ref = useRef<HTMLDivElement>(null);
   const [printedFor, setPrintedFor] = useState<string | null>(null);
 
@@ -78,7 +82,7 @@ export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopNa
           </Button>
         </div>
         <div className="bg-muted/40 py-4 max-h-[70vh] overflow-auto">
-          {sale && <Receipt ref={ref} sale={sale} products={products} shopName={shopName} logoUrl={logoUrl} />}
+          {sale && <Receipt ref={ref} sale={sale} products={products} shopName={shopName} logoUrl={logoUrl} tagline={tagline} phone={phone} mpesaPaybill={mpesaPaybill} mpesaTill={mpesaTill} />}
         </div>
       </DialogContent>
     </Dialog>

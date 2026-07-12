@@ -14,27 +14,52 @@ import {
 import {
   useDailyStockReport,
   useProducts,
-  usePurchases,
+  usePurchaseOrders,
   useSales,
   useSalesByCategory,
   useTopFoodGroups,
 } from "@/lib/butchery-store";
-import { FOOD_GROUP_LABELS, FoodGroup, todayISO } from "@/lib/butchery-types";
+import { DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, paidVia, todayISO } from "@/lib/butchery-types";
+import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { ksh, qty } from "@/lib/format";
 
 export const DailyReport = () => {
+  const { active: activeDepartment } = useActiveDepartment();
   const [date, setDate] = useState<string>(todayISO());
-  const { products } = useProducts();
-  const { sales } = useSales(date);
-  const { purchases } = usePurchases(date);
+  const { products: allProducts } = useProducts();
+  const { sales: allDaySales } = useSales(date);
+  const { orders: dayOrders } = usePurchaseOrders(date);
+
+  // Everything on this report is scoped to the department in focus, so the
+  // Bar's report shows only Bar money & stock, and the Restaurant's only food.
+  const products = useMemo(
+    () => allProducts.filter((p) => p.department === activeDepartment),
+    [allProducts, activeDepartment],
+  );
+  const deptProductIds = useMemo(
+    () => new Set(products.map((p) => p.id)),
+    [products],
+  );
+  // A sale belongs to a department if any of its line items is a product from
+  // that department (sales are rung on a department-scoped till, so all items
+  // in one sale share a department).
+  const sales = useMemo(
+    () => allDaySales.filter((s) => s.items.some((i) => deptProductIds.has(i.productId))),
+    [allDaySales, deptProductIds],
+  );
+  // This department's deliveries recorded on this date (multi-line POs).
+  const deptOrders = useMemo(
+    () => dayOrders.filter((o) => o.department === activeDepartment),
+    [dayOrders, activeDepartment],
+  );
   // Single source of truth for stock numbers in the report — the
   // event log. Replaces the old useStock(date).getOpening which was
   // reading from a legacy table that no part of the system writes to
   // anymore, hence the all-zeros bug in the Opening / Purchased /
   // Available / Remaining columns.
   const { byProductId: dailyStock } = useDailyStockReport(date);
-  const { rows: byCategory } = useSalesByCategory(date, date);
-  const { rows: byFoodGroup } = useTopFoodGroups(date, date);
+  const { rows: byCategory } = useSalesByCategory(date, date, activeDepartment);
+  const { rows: byFoodGroup } = useTopFoodGroups(date, date, activeDepartment);
 
   const rows = useMemo(() => {
     return products.map((p) => {
@@ -50,7 +75,15 @@ export const DailyReport = () => {
         s.items.filter((i) => i.productId === p.id),
       );
       const revenue = items.reduce((a, i) => a + i.amount, 0);
-      const soldFromSales = items.reduce((a, i) => a + i.quantity, 0);
+      // For bar drinks poured by measure, "sold" is counted in BOTTLES so it
+      // matches Opening/Purchased/Remaining (which are in bottles). A tot of a
+      // 750ml bottle counts as 30/750 of a bottle. Everything else is whole units.
+      const soldFromSales = items.reduce((a, i) => {
+        if (p.containerMl) {
+          return a + i.quantity * ((i.servingMl ?? p.containerMl) / p.containerMl);
+        }
+        return a + i.quantity;
+      }, 0);
 
       // Untracked products (meals): no opening stock, no purchases,
       // no end-of-day remaining concept — they are made to order.
@@ -98,14 +131,26 @@ export const DailyReport = () => {
     });
   }, [products, sales, dailyStock]);
 
+  // This department's slice of a sale (line amounts for its products only), so a
+  // mixed Food+Bar bill counts correctly in each department's totals.
+  const deptAmount = (s: (typeof sales)[number]) =>
+    s.items
+      .filter((i) => deptProductIds.has(i.productId))
+      .reduce((a, i) => a + i.amount, 0);
+
+  // This department's share of a sale paid by a given method — apportions a
+  // split payment (part cash / part M-Pesa) by the department's slice.
+  const deptPaidVia = (s: (typeof sales)[number], method: "cash" | "mpesa" | "credit") =>
+    s.subtotal > 0 ? paidVia(s, method) * (deptAmount(s) / s.subtotal) : 0;
+
   const totalRevenue = rows.reduce((a, r) => a + r.revenue, 0);
-  const cashTotal = sales.filter((s) => s.payment === "cash").reduce((a, s) => a + s.subtotal, 0);
-  const mpesaTotal = sales.filter((s) => s.payment === "mpesa").reduce((a, s) => a + s.subtotal, 0);
-  const creditTotal = sales.filter((s) => s.payment === "credit").reduce((a, s) => a + s.subtotal, 0);
+  const cashTotal = sales.reduce((a, s) => a + deptPaidVia(s, "cash"), 0);
+  const mpesaTotal = sales.reduce((a, s) => a + deptPaidVia(s, "mpesa"), 0);
+  const creditTotal = sales.reduce((a, s) => a + deptPaidVia(s, "credit"), 0);
   const creditUnpaid = sales
-    .filter((s) => s.payment === "credit" && !s.paid)
-    .reduce((a, s) => a + s.subtotal, 0);
-  const purchaseSpend = purchases.reduce((a, p) => a + p.totalCost, 0);
+    .filter((s) => !s.paid)
+    .reduce((a, s) => a + deptPaidVia(s, "credit"), 0);
+  const purchaseSpend = deptOrders.reduce((a, o) => a + o.totalCost, 0);
 
   return (
     <div className="space-y-6">
@@ -114,6 +159,9 @@ export const DailyReport = () => {
           <div>
             <h2 className="font-semibold flex items-center gap-2">
               <BarChart3 className="h-5 w-5 text-primary" /> End-of-Day Report
+              <Badge variant="secondary" className="text-[10px]">
+                {DEPARTMENT_LABELS[activeDepartment]}
+              </Badge>
             </h2>
             <p className="text-xs text-muted-foreground">
               Stock movement, sales, and accountability summary

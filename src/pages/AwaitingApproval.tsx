@@ -25,7 +25,7 @@ export default function AwaitingApproval() {
           </p>
           <p className="text-muted-foreground">
             An admin needs to assign you a role (cashier or manager) before you can
-            access Spot Butchery. Please contact your manager.
+            access the system. Please contact your manager.
           </p>
         </div>
 

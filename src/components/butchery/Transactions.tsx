@@ -13,12 +13,16 @@ import {
 } from "@/components/ui/select";
 import { Receipt as ReceiptIcon, Search, Check } from "lucide-react";
 import { useProducts, useSales } from "@/lib/butchery-store";
-import { Sale, todayISO } from "@/lib/butchery-types";
+import { Sale, paidVia, todayISO } from "@/lib/butchery-types";
+import { useActiveDepartment } from "@/contexts/DepartmentContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { ksh, qty } from "@/lib/format";
 import { ReceiptDialog } from "./ReceiptDialog";
 import { toast } from "sonner";
 
 export const Transactions = () => {
+  const { active: activeDepartment } = useActiveDepartment();
+  const { org } = useAuth();
   const { products } = useProducts();
   const { allSales, update } = useSales();
 
@@ -27,8 +31,16 @@ export const Transactions = () => {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Sale | null>(null);
 
+  // Product IDs in the active department — used to keep this history scoped to
+  // the Bar or the Restaurant, matching the header switcher.
+  const deptProductIds = useMemo(
+    () => new Set(products.filter((p) => p.department === activeDepartment).map((p) => p.id)),
+    [products, activeDepartment],
+  );
+
   const rows = useMemo(() => {
     return allSales
+      .filter((s) => s.items.some((i) => deptProductIds.has(i.productId)))
       .filter((s) => (date ? s.date === date : true))
       .filter((s) => (pay === "all" ? true : s.payment === pay))
       .filter((s) => {
@@ -40,16 +52,32 @@ export const Transactions = () => {
           (s.mpesaRef ?? "").toLowerCase().includes(q)
         );
       });
-  }, [allSales, date, pay, search]);
+  }, [allSales, deptProductIds, date, pay, search]);
+
+  // A sale's revenue that belongs to THIS department = sum of its line amounts
+  // for products in this department. For a single-department cashier this equals
+  // the whole subtotal; for a mixed bill it's just this department's slice, so
+  // totals never double-count across Food and Bar.
+  const deptAmount = (s: Sale) =>
+    s.items
+      .filter((i) => deptProductIds.has(i.productId))
+      .reduce((a, i) => a + i.amount, 0);
+
+  // A split sale's method amounts are apportioned to this department by its share.
+  const deptPaidVia = (s: Sale, method: "cash" | "mpesa" | "credit") =>
+    s.subtotal > 0 ? paidVia(s, method) * (deptAmount(s) / s.subtotal) : 0;
 
   const totals = useMemo(() => {
     const t = { cash: 0, mpesa: 0, credit: 0, all: 0 };
     rows.forEach((s) => {
-      t[s.payment] += s.subtotal;
-      t.all += s.subtotal;
+      t.cash += deptPaidVia(s, "cash");
+      t.mpesa += deptPaidVia(s, "mpesa");
+      t.credit += deptPaidVia(s, "credit");
+      t.all += deptAmount(s);
     });
     return t;
-  }, [rows]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, deptProductIds]);
 
   const markPaid = (id: string) => {
     update(id, { paid: true });
@@ -80,6 +108,7 @@ export const Transactions = () => {
                 <SelectItem value="cash">Cash</SelectItem>
                 <SelectItem value="mpesa">M-Pesa</SelectItem>
                 <SelectItem value="credit">Credit</SelectItem>
+                <SelectItem value="split">Split</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -127,17 +156,19 @@ export const Transactions = () => {
                       })}
                     </td>
                     <td className="p-3 text-xs">
-                      {s.items.map((it, i) => {
-                        const p = products.find((x) => x.id === it.productId);
-                        return (
-                          <div key={i}>
-                            <span className="font-medium">{p?.name ?? "—"}</span>{" "}
-                            <span className="text-muted-foreground">
-                              ({qty(it.quantity, p?.unit ?? "")})
-                            </span>
-                          </div>
-                        );
-                      })}
+                      {s.items
+                        .filter((it) => deptProductIds.has(it.productId))
+                        .map((it, i) => {
+                          const p = products.find((x) => x.id === it.productId);
+                          return (
+                            <div key={i}>
+                              <span className="font-medium">{p?.name ?? "—"}</span>{" "}
+                              <span className="text-muted-foreground">
+                                ({qty(it.quantity, it.servingName ?? p?.unit ?? "")})
+                              </span>
+                            </div>
+                          );
+                        })}
                     </td>
                     <td className="p-3">
                       <Badge
@@ -156,9 +187,16 @@ export const Transactions = () => {
                           {s.mpesaRef}
                         </p>
                       )}
+                      {s.payment === "split" && (
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          {(s.payments ?? [])
+                            .map((p) => `${p.method === "cash" ? "Cash" : "M-Pesa"} ${ksh(p.amount)}`)
+                            .join(" + ")}
+                        </p>
+                      )}
                     </td>
                     <td className="p-3 text-right font-bold text-primary tabular-nums">
-                      {ksh(s.subtotal)}
+                      {ksh(deptAmount(s))}
                     </td>
                     <td className="p-3 text-right whitespace-nowrap">
                       <Button size="sm" variant="outline" onClick={() => setSelected(s)}>
@@ -188,6 +226,12 @@ export const Transactions = () => {
         products={products}
         open={!!selected}
         onClose={() => setSelected(null)}
+        shopName={org?.name}
+        logoUrl={org?.logo_url}
+        tagline={org?.tagline}
+        phone={org?.phone}
+        mpesaPaybill={org?.mpesa_paybill}
+        mpesaTill={org?.mpesa_till}
       />
     </div>
   );

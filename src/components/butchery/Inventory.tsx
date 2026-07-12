@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Beef, Truck, History as HistoryIcon } from "lucide-react";
+import { Beef, Truck, ChefHat, ClipboardCheck, History as HistoryIcon } from "lucide-react";
 import { ProductsManager } from "./ProductsManager";
 import { PurchaseOrders } from "./PurchaseOrders";
 import { StockMovementsLog } from "./StockMovementsLog";
+import { IngredientUsage } from "./IngredientUsage";
+import { StockTake } from "./StockTake";
 import { useAuth } from "@/contexts/AuthContext";
+import { useActiveDepartment } from "@/contexts/DepartmentContext";
 
 /**
  * Inventory — one place for every "what stock do we have / what
@@ -24,11 +27,11 @@ import { useAuth } from "@/contexts/AuthContext";
  * the slash is owned by Index.tsx, the part after by this file.
  */
 
-type SubTabId = "products" | "purchases" | "movements";
+type SubTabId = "products" | "purchases" | "usage" | "stocktake" | "movements";
 const DEFAULT_SUB: SubTabId = "products";
 
 const isSubTab = (v: string): v is SubTabId =>
-  v === "products" || v === "purchases" || v === "movements";
+  v === "products" || v === "purchases" || v === "usage" || v === "stocktake" || v === "movements";
 
 // Read the part AFTER the slash in the URL hash:
 //   "#inventory"          → ""
@@ -42,6 +45,7 @@ function readSubFromHash(): SubTabId {
 
 export const Inventory = () => {
   const { hasPermission, role } = useAuth();
+  const { active: activeDepartment } = useActiveDepartment();
   const isManagerOrAbove = role === "admin" || role === "manager";
 
   // Permission gates per sub-tab. Mirrors the top-level checks so
@@ -53,6 +57,11 @@ export const Inventory = () => {
     hasPermission("can_create_purchase_orders") ||
     hasPermission("can_receive_purchases");
   const canSeeMovements = isManagerOrAbove || hasPermission("can_view_stock");
+  // The chef's ingredient-usage log is a Restaurant-only workflow (the Bar
+  // doesn't have "ingredients used" — it sells bottles/measures directly).
+  const canSeeUsage = canSeeMovements && activeDepartment === "restaurant";
+  // Stock-take is a manager control, in every department.
+  const canSeeStockTake = isManagerOrAbove || hasPermission("can_view_stock");
 
   // Compute the first sub-tab this user can actually open. We use it
   // as the fallback when the URL points at a tab they can't see.
@@ -60,14 +69,20 @@ export const Inventory = () => {
     ? "products"
     : canSeePurchases
       ? "purchases"
-      : canSeeMovements
-        ? "movements"
-        : "products";
+      : canSeeUsage
+        ? "usage"
+        : canSeeStockTake
+          ? "stocktake"
+          : canSeeMovements
+            ? "movements"
+            : "products";
 
   const resolveInitial = (): SubTabId => {
     const raw = readSubFromHash();
     if (raw === "products" && canSeeProducts) return "products";
     if (raw === "purchases" && canSeePurchases) return "purchases";
+    if (raw === "usage" && canSeeUsage) return "usage";
+    if (raw === "stocktake" && canSeeStockTake) return "stocktake";
     if (raw === "movements" && canSeeMovements) return "movements";
     return firstAllowed;
   };
@@ -94,11 +109,16 @@ export const Inventory = () => {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canSeeProducts, canSeePurchases, canSeeMovements]);
+  }, [canSeeProducts, canSeePurchases, canSeeUsage, canSeeStockTake, canSeeMovements]);
+
+  const tabCount = [canSeeProducts, canSeePurchases, canSeeUsage, canSeeStockTake, canSeeMovements].filter(Boolean).length;
 
   return (
     <Tabs value={sub} onValueChange={handleChange} className="space-y-6">
-      <TabsList className="grid grid-cols-3 w-full sm:max-w-md h-auto p-1 gap-1">
+      <TabsList
+        className="grid w-full sm:max-w-xl h-auto p-1 gap-1"
+        style={{ gridTemplateColumns: `repeat(${Math.max(tabCount, 1)}, minmax(0, 1fr))` }}
+      >
         {canSeeProducts && (
           <TabsTrigger value="products" className="gap-1.5 py-2 text-xs sm:text-sm">
             <Beef className="h-4 w-4" /> Products
@@ -107,6 +127,16 @@ export const Inventory = () => {
         {canSeePurchases && (
           <TabsTrigger value="purchases" className="gap-1.5 py-2 text-xs sm:text-sm">
             <Truck className="h-4 w-4" /> Purchases
+          </TabsTrigger>
+        )}
+        {canSeeUsage && (
+          <TabsTrigger value="usage" className="gap-1.5 py-2 text-xs sm:text-sm">
+            <ChefHat className="h-4 w-4" /> Kitchen
+          </TabsTrigger>
+        )}
+        {canSeeStockTake && (
+          <TabsTrigger value="stocktake" className="gap-1.5 py-2 text-xs sm:text-sm">
+            <ClipboardCheck className="h-4 w-4" /> Stock-take
           </TabsTrigger>
         )}
         {canSeeMovements && (
@@ -124,6 +154,16 @@ export const Inventory = () => {
       {canSeePurchases && (
         <TabsContent value="purchases" className="m-0">
           <PurchaseOrders />
+        </TabsContent>
+      )}
+      {canSeeUsage && (
+        <TabsContent value="usage" className="m-0">
+          <IngredientUsage />
+        </TabsContent>
+      )}
+      {canSeeStockTake && (
+        <TabsContent value="stocktake" className="m-0">
+          <StockTake />
         </TabsContent>
       )}
       {canSeeMovements && (
