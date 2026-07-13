@@ -78,25 +78,42 @@ export function printHtml(title: string, bodyHtml: string, css = "") {
   }, 300);
 }
 
-/** Shared print stylesheet for tabular reports (A4, readable, dashed rules). */
+/**
+ * Report print stylesheet for an 80mm THERMAL roll (the printer our users
+ * actually have) — the report prints like a long receipt, not an A4 page.
+ * Same @page trick as the receipt, so it also works if someone picks
+ * "Save as PDF" (they get an 80mm-wide PDF). Bold + true-black for clear
+ * thermal output. Uses the SAME class names the report body already emits.
+ */
 export const REPORT_PRINT_CSS = `
-  @page { size: A4 portrait; margin: 14mm; }
+  @page { size: 80mm auto; margin: 3mm; }
   * { box-sizing: border-box; }
-  body { font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; color: #000; margin: 0; }
-  h1 { font-size: 18px; margin: 0; }
-  h2 { font-size: 13px; margin: 16px 0 6px; border-bottom: 1px solid #000; padding-bottom: 2px; }
-  .sub { font-size: 11px; color: #333; margin: 2px 0 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body {
+    font-family: ui-monospace, "Cascadia Mono", "Courier New", monospace;
+    color: #000;
+    width: 72mm;
+    font-size: 11.5px;
+    font-weight: 700;
+    line-height: 1.35;
+    -webkit-font-smoothing: none;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  h1 { font-size: 15px; font-weight: 800; text-align: center; text-transform: uppercase; margin: 0; }
+  h2 { font-size: 12.5px; font-weight: 800; margin: 9px 0 3px; border-bottom: 2px dashed #000; padding-bottom: 2px; }
+  .sub { font-size: 10.5px; text-align: center; margin: 2px 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
   .kv td { padding: 2px 0; }
-  .kv td:last-child { text-align: right; font-weight: 700; white-space: nowrap; }
-  .grid th, .grid td { border: 1px solid #999; padding: 4px 6px; text-align: right; }
-  .grid th:first-child, .grid td:first-child { text-align: left; }
-  .grid th { background: #eee; }
-  .grid tfoot td { font-weight: 700; background: #f4f4f4; }
+  .kv td:last-child { text-align: right; font-weight: 800; white-space: nowrap; }
+  .grid th, .grid td { padding: 2px 0; text-align: right; vertical-align: top; }
+  .grid th:first-child, .grid td:first-child { text-align: left; overflow-wrap: anywhere; padding-right: 4px; }
+  .grid thead th { border-bottom: 1px dashed #000; font-weight: 800; }
+  .grid tfoot td { border-top: 1px dashed #000; font-weight: 800; }
   .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .empty { font-size: 11px; color: #666; margin: 2px 0 8px; }
-  .grand { width: 100%; margin-top: 14px; border-collapse: collapse; }
-  .grand td { border-top: 3px double #000; padding: 8px 6px; font-size: 15px; font-weight: 700; }
+  .empty { font-size: 10.5px; margin: 2px 0 6px; }
+  .grand { width: 100%; margin-top: 8px; border-collapse: collapse; }
+  .grand td { border-top: 2px solid #000; padding: 5px 0; font-size: 14px; font-weight: 800; }
   .grand td:last-child { text-align: right; }
-  .foot { margin-top: 14px; font-size: 10px; color: #666; text-align: center; }
+  .foot { margin-top: 10px; font-size: 10px; text-align: center; }
 `;
