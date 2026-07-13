@@ -1167,6 +1167,203 @@ export interface StockOnHandRow {
   qtyOnHand: number;
 }
 
+// ── useOrders ─────────────────────────────────────────────────────────────────
+// Open orders (order now, pay later). Kept entirely separate from `sales`, so
+// nothing here counts as revenue/stock-report until paid. Stock IS deducted the
+// moment items are added (the DB order_item trigger), because they're consumed.
+
+export interface OrderItemInput {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+  servingName?: string | null;
+  servingMl?: number | null;
+}
+
+export interface OrderLineRow extends OrderItemInput {
+  productName: string;
+  unit: string;
+  amount: number;
+}
+
+export interface OrderRow {
+  id: string;
+  orderNo: number;
+  note: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  items: OrderLineRow[];
+  total: number;
+}
+
+export interface PayOrderParams {
+  order: OrderRow;
+  payment: SalePaymentKind;
+  payments?: SalePayment[];
+  cashGiven?: number;
+  change?: number;
+  mpesaRef?: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerId?: string | null;
+}
+
+const toDbOrderItem = (i: OrderItemInput) => ({
+  product_id: i.productId,
+  quantity: i.quantity,
+  unit_price: i.unitPrice,
+  serving_name: i.servingName ?? null,
+  serving_ml: i.servingMl ?? null,
+});
+
+function mapOrder(row: Record<string, unknown>): OrderRow {
+  const items: OrderLineRow[] = ((row.order_items as Record<string, unknown>[]) ?? []).map((i) => {
+    const prod = i.products as { name?: string; unit?: string } | null;
+    return {
+      productId: i.product_id as string,
+      productName: prod?.name ?? "(deleted)",
+      unit: prod?.unit ?? "",
+      quantity: Number(i.quantity),
+      unitPrice: Number(i.unit_price),
+      amount: Number(i.amount),
+      servingName: (i.serving_name as string | null) ?? null,
+      servingMl: i.serving_ml != null ? Number(i.serving_ml) : null,
+    };
+  });
+  return {
+    id: row.id as string,
+    orderNo: Number(row.order_no),
+    note: (row.note as string | null) ?? null,
+    createdBy: (row.created_by as string | null) ?? null,
+    createdAt: row.created_at as string,
+    items,
+    total: items.reduce((a, i) => a + i.amount, 0),
+  };
+}
+
+export function useOrders() {
+  const qc = useQueryClient();
+  const chId = useRef(`orders-${Math.random().toString(36).slice(2)}`);
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const profileId = getProfileId();
+
+  const { data: orders = [] } = useQuery({
+    queryKey: ["orders", orgId, branchId],
+    queryFn: async (): Promise<OrderRow[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("orders")
+        .select(
+          "id, order_no, note, created_by, created_at, order_items(product_id, quantity, unit_price, amount, serving_name, serving_ml, products(name, unit))",
+        )
+        .eq("org_id", orgId)
+        .eq("branch_id", branchId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map((r) => mapOrder(r as Record<string, unknown>));
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  useEffect(() => {
+    if (!orgId || !branchId) return;
+    const invalidate = () => qc.invalidateQueries({ queryKey: ["orders", orgId, branchId] });
+    const channel = supabase
+      .channel(chId.current)
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders", filter: `branch_id=eq.${branchId}` }, invalidate)
+      .on("postgres_changes", { event: "*", schema: "public", table: "order_items" }, invalidate)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc, orgId, branchId]);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["orders", orgId, branchId] });
+    qc.invalidateQueries({ queryKey: ["stock_on_hand", orgId, branchId] });
+  };
+
+  const createMutation = useMutation({
+    mutationFn: async (params: { items: OrderItemInput[]; note?: string; shiftId?: string | null }) => {
+      const { data, error } = await supabase.rpc("create_order", {
+        p_org_id: orgId,
+        p_branch_id: branchId,
+        p_items: JSON.parse(JSON.stringify(params.items.map(toDbOrderItem))),
+        p_created_by: profileId,
+        p_shift_id: params.shiftId ?? null,
+        p_note: params.note ?? null,
+      });
+      if (error) throw new Error(error.message);
+      return data;
+    },
+    onSuccess: refresh,
+  });
+
+  const addItemsMutation = useMutation({
+    mutationFn: async (params: { orderId: string; items: OrderItemInput[] }) => {
+      const { error } = await supabase.rpc("add_order_items", {
+        p_order_id: params.orderId,
+        p_items: JSON.parse(JSON.stringify(params.items.map(toDbOrderItem))),
+      });
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: refresh,
+  });
+
+  const payMutation = useMutation({
+    mutationFn: async (params: PayOrderParams) => {
+      const { data, error } = await supabase.rpc("pay_order", {
+        p_order_id: params.order.id,
+        p_payment: params.payment,
+        p_payments: JSON.parse(JSON.stringify(params.payments ?? [])),
+        p_cash_given: params.cashGiven ?? null,
+        p_change: params.change ?? null,
+        p_mpesa_ref: params.mpesaRef ?? null,
+        p_customer_name: params.customerName ?? null,
+        p_customer_phone: params.customerPhone ?? null,
+        p_customer_id: params.customerId ?? null,
+        p_paid: params.payment !== "credit",
+      });
+      if (error) throw new Error(error.message);
+      // Build a Sale for the receipt from the returned row + the order's items.
+      return mapSale({
+        ...(data as Record<string, unknown>),
+        sale_items: params.order.items.map((i) => ({
+          product_id: i.productId,
+          quantity: i.quantity,
+          unit_price: i.unitPrice,
+          amount: i.amount,
+          serving_name: i.servingName ?? null,
+          serving_ml: i.servingMl ?? null,
+        })),
+      });
+    },
+    onSuccess: () => {
+      refresh();
+      qc.invalidateQueries({ queryKey: ["sales", orgId, branchId] });
+    },
+  });
+
+  const voidMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const { error } = await supabase.rpc("void_order", { p_order_id: orderId });
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: refresh,
+  });
+
+  return {
+    orders,
+    createOrder: (items: OrderItemInput[], note?: string, shiftId?: string | null) =>
+      createMutation.mutateAsync({ items, note, shiftId }),
+    addItems: (orderId: string, items: OrderItemInput[]) =>
+      addItemsMutation.mutateAsync({ orderId, items }),
+    payOrder: (params: Parameters<typeof payMutation.mutateAsync>[0]) =>
+      payMutation.mutateAsync(params),
+    voidOrder: (orderId: string) => voidMutation.mutateAsync(orderId),
+  };
+}
+
 export function useStockOnHand() {
   const qc = useQueryClient();
   const chId = useRef(`stock_on_hand-${Math.random().toString(36).slice(2)}`);

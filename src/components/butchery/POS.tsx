@@ -24,8 +24,10 @@ import {
   Wine,
   Hotel,
   SplitSquareHorizontal,
+  ClipboardList,
 } from "lucide-react";
-import { useCustomers, useProducts, useSales, useServings, useShift, useStockOnHand } from "@/lib/butchery-store";
+import { useCustomers, useOrders, useProducts, useSales, useServings, useShift, useStockOnHand } from "@/lib/butchery-store";
+import type { OrderRow, OrderItemInput, PayOrderParams } from "@/lib/butchery-store";
 import type { CustomerBalance } from "@/lib/butchery-types";
 import {
   Select,
@@ -110,6 +112,7 @@ export const POS = () => {
   const { products } = useProducts();
   const { forProduct: servingsFor } = useServings();
   const { add: addSale } = useSales();
+  const { orders, createOrder, addItems, payOrder, voidOrder } = useOrders();
   const { shift, cashSoFar, openShift, closeShift } = useShift();
   const { customers, add: addCustomer } = useCustomers();
   // Cashiers must be on an open shift to sell (accountability + cash-up).
@@ -145,6 +148,15 @@ export const POS = () => {
   const [customerPhone, setCustomerPhone] = useState("");
   // Existing loan account chosen for a credit sale (null = new / walk-in).
   const [creditCustomerId, setCreditCustomerId] = useState<string | null>(null);
+
+  // ── Orders (pay later) state ────────────────────────────────
+  const [ordersOpen, setOrdersOpen] = useState(false);
+  // When set, the current cart is being ADDED to this existing open order
+  // (a new round) rather than starting a fresh order/sale.
+  const [addingToOrderId, setAddingToOrderId] = useState<string | null>(null);
+  // The order whose payment is being collected (opens the pay dialog).
+  const [payingOrder, setPayingOrder] = useState<OrderRow | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
 
   // ── Receipt + saving state ──────────────────────────────────
   const [lastSale, setLastSale] = useState<Sale | null>(null);
@@ -398,6 +410,68 @@ export const POS = () => {
     }
   };
 
+  // ── Orders (pay later) ──────────────────────────────────────
+  // Turn the current cart into order-item inputs (same price/serving rules as
+  // a sale, just without the money side — that's collected at payment).
+  const cartToOrderItems = (): OrderItemInput[] =>
+    cart.map((line) => {
+      const p = products.find((x) => x.id === line.productId)!;
+      return {
+        productId: p.id,
+        quantity: line.quantity,
+        unitPrice: linePrice(line, p),
+        servingName: line.serving?.name ?? null,
+        servingMl: line.serving?.volumeMl ?? null,
+      };
+    });
+
+  const validateCartForOrder = (): boolean => {
+    if (cart.length === 0) {
+      toast.error("Cart is empty");
+      return false;
+    }
+    if (requiresShift && !shift) {
+      toast.error("Open your shift first");
+      return false;
+    }
+    for (const line of cart) {
+      const p = products.find((x) => x.id === line.productId);
+      if (!p) continue;
+      if (line.quantity <= 0) {
+        toast.error(`Set quantity for ${p.name}`);
+        return false;
+      }
+      if (linePrice(line, p) <= 0) {
+        toast.error(`Set price for ${p.name}`);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Save the cart as a NEW open order, or append it to the one we're adding to.
+  const handleSaveOrder = async () => {
+    if (!validateCartForOrder()) return;
+    setSavingOrder(true);
+    try {
+      const items = cartToOrderItems();
+      if (addingToOrderId) {
+        await addItems(addingToOrderId, items);
+        toast.success("Added to order");
+        setAddingToOrderId(null);
+      } else {
+        const order = await createOrder(items, undefined, shift?.id ?? null);
+        toast.success(`Order #${(order as { order_no: number }).order_no} saved`);
+      }
+      setCart([]);
+      setActiveKgLineId(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save order");
+    } finally {
+      setSavingOrder(false);
+    }
+  };
+
   // ── Render ──────────────────────────────────────────────────
   return (
     <>
@@ -579,22 +653,115 @@ export const POS = () => {
                   compact
                 />
 
-                <Button
-                  onClick={handleCheckout}
-                  disabled={selling || (requiresShift && !shift)}
-                  className="w-full bg-gradient-primary h-11 text-base font-semibold"
-                >
-                  {requiresShift && !shift
-                    ? "Open a shift to sell"
-                    : selling
-                      ? "Saving…"
-                      : "Complete sale"}
-                </Button>
+                {addingToOrderId ? (
+                  // Adding a round to an existing open order — no payment here.
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={handleSaveOrder}
+                        disabled={savingOrder}
+                        className="flex-1 bg-gradient-primary h-11 text-base font-semibold"
+                      >
+                        {savingOrder
+                          ? "Adding…"
+                          : `Add to Order #${
+                              orders.find((o) => o.id === addingToOrderId)?.orderNo ?? ""
+                            }`}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="h-11"
+                        onClick={() => setAddingToOrderId(null)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Button
+                      onClick={handleCheckout}
+                      disabled={selling || (requiresShift && !shift)}
+                      className="w-full bg-gradient-primary h-11 text-base font-semibold"
+                    >
+                      {requiresShift && !shift
+                        ? "Open a shift to sell"
+                        : selling
+                          ? "Saving…"
+                          : "Complete sale"}
+                    </Button>
+                    {/* Order now, pay later: park this cart as an open order. */}
+                    <Button
+                      variant="outline"
+                      onClick={handleSaveOrder}
+                      disabled={savingOrder || (requiresShift && !shift)}
+                      className="w-full h-10 text-sm font-semibold gap-1.5"
+                    >
+                      <ClipboardList className="h-4 w-4" />
+                      {savingOrder ? "Saving…" : "Save as order (pay later)"}
+                    </Button>
+                  </>
+                )}
               </div>
             </>
           )}
         </Card>
       </div>
+
+      {/* Floating "Open orders" button — always reachable so any waiter can pick
+          up a table's bill to add a round or collect payment. */}
+      <button
+        type="button"
+        onClick={() => setOrdersOpen(true)}
+        className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground shadow-elevated px-5 py-3 font-semibold hover:opacity-95 active:scale-[0.98]"
+      >
+        <ClipboardList className="h-5 w-5" />
+        Orders
+        {orders.length > 0 && (
+          <span className="ml-1 grid h-6 min-w-6 place-items-center rounded-full bg-primary-foreground text-primary text-sm font-bold px-1.5">
+            {orders.length}
+          </span>
+        )}
+      </button>
+
+      {/* Orders panel */}
+      <OrdersDialog
+        open={ordersOpen}
+        onClose={() => setOrdersOpen(false)}
+        orders={orders}
+        onAddItems={(id) => {
+          setAddingToOrderId(id);
+          setOrdersOpen(false);
+          toast.info("Tap products, then 'Add to order'");
+        }}
+        onPay={(o) => {
+          setPayingOrder(o);
+          setOrdersOpen(false);
+        }}
+        onVoid={async (id) => {
+          try {
+            await voidOrder(id);
+            toast.success("Order voided — stock returned");
+          } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Failed to void");
+          }
+        }}
+      />
+
+      {/* Collect payment for an open order */}
+      <OrderPayDialog
+        order={payingOrder}
+        onClose={() => setPayingOrder(null)}
+        customers={customers}
+        addCustomer={addCustomer}
+        onPaid={async (params) => {
+          const sale = await payOrder(params);
+          setPayingOrder(null);
+          setLastSale(sale);
+          setShowReceipt(true);
+          toast.success(`Sale ${sale.receiptNo} recorded`);
+        }}
+      />
 
       {/* Serving picker — appears when a bar drink has multiple pours. */}
       <Dialog open={!!servingPickerFor} onOpenChange={(o) => !o && setServingPickerFor(null)}>
@@ -1285,5 +1452,235 @@ function ScaleButton({
       <span className="hidden sm:inline">Connect scale</span>
       <span className="sm:hidden">Scale</span>
     </button>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────
+ * OrdersDialog — the list of open orders (pay later). Each order can
+ * be paid, reopened to add a round, or voided.
+ * ───────────────────────────────────────────────────────────── */
+function OrdersDialog({
+  open,
+  onClose,
+  orders,
+  onAddItems,
+  onPay,
+  onVoid,
+}: {
+  open: boolean;
+  onClose: () => void;
+  orders: OrderRow[];
+  onAddItems: (id: string) => void;
+  onPay: (o: OrderRow) => void;
+  onVoid: (id: string) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ClipboardList className="h-5 w-5 text-primary" /> Open orders
+          </DialogTitle>
+        </DialogHeader>
+        {orders.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-8 text-center">
+            No open orders. Build a cart and tap “Save as order (pay later)”.
+          </p>
+        ) : (
+          <div className="space-y-3 max-h-[62vh] overflow-y-auto -mx-1 px-1">
+            {orders.map((o) => (
+              <div key={o.id} className="rounded-lg border p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="font-semibold">
+                    Order #{o.orderNo}
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      {new Date(o.createdAt).toLocaleTimeString("en-KE", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                  <span className="font-bold text-primary tabular-nums">{ksh(o.total)}</span>
+                </div>
+                <div className="text-xs text-muted-foreground mb-2">
+                  {o.items
+                    .map(
+                      (i) =>
+                        `${i.productName}${i.servingName ? ` (${i.servingName})` : ""} ×${Number(
+                          i.quantity.toFixed(3),
+                        )}`,
+                    )
+                    .join(", ")}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    className="bg-gradient-primary flex-1"
+                    onClick={() => onPay(o)}
+                  >
+                    Pay {ksh(o.total)}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => onAddItems(o.id)}>
+                    Add items
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive"
+                    onClick={() => onVoid(o.id)}
+                  >
+                    Void
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────
+ * OrderPayDialog — collect payment for an open order and convert it
+ * to a sale. Holds its own payment state and reuses PaymentSection.
+ * ───────────────────────────────────────────────────────────── */
+function OrderPayDialog({
+  order,
+  onClose,
+  customers,
+  addCustomer,
+  onPaid,
+}: {
+  order: OrderRow | null;
+  onClose: () => void;
+  customers: CustomerBalance[];
+  addCustomer: (c: { name: string; phone?: string }) => Promise<{ id: string }>;
+  onPaid: (params: PayOrderParams) => Promise<void>;
+}) {
+  const [payment, setPayment] = useState<SalePaymentKind>("cash");
+  const [cashGiven, setCashGiven] = useState("");
+  const [mpesaRef, setMpesaRef] = useState("");
+  const [splitCash, setSplitCash] = useState("");
+  const [splitMpesa, setSplitMpesa] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [creditCustomerId, setCreditCustomerId] = useState<string | null>(null);
+  const [paying, setPaying] = useState(false);
+
+  const total = order?.total ?? 0;
+  const change = Math.max((Number(cashGiven) || 0) - total, 0);
+
+  // Reset the form whenever a different order is opened.
+  useEffect(() => {
+    setPayment("cash");
+    setCashGiven("");
+    setMpesaRef("");
+    setSplitCash("");
+    setSplitMpesa("");
+    setCustomerName("");
+    setCustomerPhone("");
+    setCreditCustomerId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.id]);
+
+  const handlePay = async () => {
+    if (!order) return;
+    if (payment === "cash" && cashGiven && Number(cashGiven) < total)
+      return toast.error("Cash given is less than total");
+    if (payment === "mpesa" && !mpesaRef.trim())
+      return toast.error("Enter M-Pesa reference");
+    if (payment === "credit" && !creditCustomerId && !customerName.trim())
+      return toast.error("Pick or enter a customer for the credit sale");
+
+    let splitPayments: SalePayment[] | undefined;
+    if (payment === "split") {
+      const c = Number(splitCash) || 0;
+      const m = Number(splitMpesa) || 0;
+      if (Math.abs(c + m - total) > 0.5)
+        return toast.error(`Split must add up to ${ksh(total)}`);
+      if (m > 0 && !mpesaRef.trim())
+        return toast.error("Enter the M-Pesa reference for the M-Pesa part");
+      splitPayments = [
+        ...(c > 0 ? [{ method: "cash" as const, amount: c }] : []),
+        ...(m > 0 ? [{ method: "mpesa" as const, amount: m, ref: mpesaRef.trim() || undefined }] : []),
+      ];
+    }
+
+    setPaying(true);
+    try {
+      let customerId: string | null = null;
+      let creditName = customerName.trim();
+      if (payment === "credit") {
+        if (creditCustomerId) {
+          customerId = creditCustomerId;
+          creditName = customers.find((c) => c.id === creditCustomerId)?.name ?? creditName;
+        } else if (creditName) {
+          const created = await addCustomer({
+            name: creditName,
+            phone: customerPhone.trim() || undefined,
+          });
+          customerId = created.id;
+        }
+      }
+      await onPaid({
+        order,
+        payment,
+        payments: splitPayments,
+        cashGiven: payment === "cash" ? Number(cashGiven) || total : undefined,
+        change: payment === "cash" ? change : undefined,
+        mpesaRef: payment === "mpesa" ? mpesaRef.trim() : undefined,
+        customerName: payment === "credit" ? creditName : undefined,
+        customerPhone: payment === "credit" ? customerPhone.trim() || undefined : undefined,
+        customerId,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Payment failed");
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!order} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Pay Order #{order?.orderNo}</DialogTitle>
+        </DialogHeader>
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold">Total</span>
+          <span className="text-2xl font-bold text-primary tabular-nums">{ksh(total)}</span>
+        </div>
+        <PaymentSection
+          total={total}
+          payment={payment}
+          setPayment={setPayment}
+          cashGiven={cashGiven}
+          setCashGiven={setCashGiven}
+          change={change}
+          mpesaRef={mpesaRef}
+          setMpesaRef={setMpesaRef}
+          customerName={customerName}
+          setCustomerName={setCustomerName}
+          customerPhone={customerPhone}
+          setCustomerPhone={setCustomerPhone}
+          customers={customers}
+          creditCustomerId={creditCustomerId}
+          setCreditCustomerId={setCreditCustomerId}
+          splitCash={splitCash}
+          setSplitCash={setSplitCash}
+          splitMpesa={splitMpesa}
+          setSplitMpesa={setSplitMpesa}
+          compact
+        />
+        <Button
+          onClick={handlePay}
+          disabled={paying}
+          className="w-full bg-gradient-primary h-11 text-base font-semibold"
+        >
+          {paying ? "Saving…" : "Complete payment"}
+        </Button>
+      </DialogContent>
+    </Dialog>
   );
 }
