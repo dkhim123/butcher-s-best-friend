@@ -68,38 +68,11 @@ export default defineConfig(() => ({
     // A data-heavy SPA legitimately ships a few hundred KB of framework code;
     // it's precached by the service worker, so this limit just quiets the noise.
     chunkSizeWarningLimit: 900,
-    rollupOptions: {
-      output: {
-        // Split vendor libraries into stable, separately-cached chunks. Total
-        // bytes are the same, but an app-code change no longer busts the big
-        // framework chunks — so updates download fast and load faster.
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return;
-          if (id.includes("@supabase")) return "supabase";
-          if (id.includes("@tanstack")) return "query";
-          if (id.includes("react-router") || id.includes("@remix-run")) return "router";
-          if (id.includes("react-hook-form") || id.includes("@hookform") || id.includes("zod"))
-            return "forms";
-          if (id.includes("date-fns") || id.includes("react-day-picker")) return "dates";
-          if (
-            id.includes("@radix-ui") ||
-            id.includes("lucide-react") ||
-            id.includes("cmdk") ||
-            id.includes("vaul") ||
-            id.includes("sonner") ||
-            id.includes("class-variance-authority") ||
-            id.includes("tailwind-merge")
-          )
-            return "ui";
-          if (
-            id.includes("/react/") ||
-            id.includes("/react-dom/") ||
-            id.includes("/scheduler/")
-          )
-            return "react";
-          return "vendor";
-        },
-      },
-    },
+    // NOTE: we deliberately DON'T hand-split vendor chunks with manualChunks.
+    // Manually isolating React into its own chunk caused a blank page in
+    // production — a vendor chunk (e.g. next-themes) ran React.createContext
+    // before the React chunk had initialised ("Cannot read properties of
+    // undefined (reading 'createContext')"). Letting Rollup auto-split keeps
+    // React and its consumers correctly ordered.
   },
 }));
