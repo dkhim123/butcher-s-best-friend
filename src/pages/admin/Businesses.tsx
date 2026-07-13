@@ -8,6 +8,13 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import {
   Building2,
@@ -18,6 +25,9 @@ import {
   RefreshCw,
   Power,
   KeyRound,
+  Users,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -29,6 +39,22 @@ interface OrgRow {
   active: boolean;
   created_at: string;
 }
+
+interface StaffRow {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  created_at: string;
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  admin: "Admin",
+  manager: "Manager",
+  cashier: "Cashier",
+  pending: "Pending",
+  super_admin: "Super Admin",
+};
 
 /**
  * Businesses — the platform super-admin console.
@@ -60,11 +86,35 @@ export default function Businesses() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // Per-business staff list (admin + the users they created).
+  const [openOrg, setOpenOrg] = useState<string | null>(null);
+  const [staffByOrg, setStaffByOrg] = useState<Record<string, StaffRow[]>>({});
+  const [loadingStaff, setLoadingStaff] = useState<string | null>(null);
+
+  const toggleStaff = async (orgId: string) => {
+    if (openOrg === orgId) { setOpenOrg(null); return; }
+    setOpenOrg(orgId);
+    if (staffByOrg[orgId]) return; // already loaded
+    setLoadingStaff(orgId);
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, email, full_name, role, created_at")
+      .eq("org_id", orgId)
+      .order("created_at");
+    setLoadingStaff(null);
+    if (error) { toast.error("Failed to load users: " + error.message); return; }
+    setStaffByOrg((prev) => ({ ...prev, [orgId]: (data ?? []) as StaffRow[] }));
+  };
+
   // Register form
   const [businessName, setBusinessName] = useState("");
   const [tagline, setTagline] = useState("");
   const [phone, setPhone] = useState("");
+  // A business uses one M-Pesa method: none, a Paybill (business no + account),
+  // or a Buy Goods Till (one number).
+  const [mpesaMethod, setMpesaMethod] = useState<"none" | "paybill" | "till">("none");
   const [mpesaPaybill, setMpesaPaybill] = useState("");
+  const [mpesaAccount, setMpesaAccount] = useState("");
   const [mpesaTill, setMpesaTill] = useState("");
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -104,8 +154,9 @@ export default function Businesses() {
       businessName,
       tagline,
       phone,
-      mpesaPaybill,
-      mpesaTill,
+      mpesaPaybill: mpesaMethod === "paybill" ? mpesaPaybill : "",
+      mpesaPaybillAccount: mpesaMethod === "paybill" ? mpesaAccount : "",
+      mpesaTill: mpesaMethod === "till" ? mpesaTill : "",
     });
     setCreating(false);
     if (error) return toast.error(error);
@@ -114,7 +165,9 @@ export default function Businesses() {
     setBusinessName("");
     setTagline("");
     setPhone("");
+    setMpesaMethod("none");
     setMpesaPaybill("");
+    setMpesaAccount("");
     setMpesaTill("");
     setFullName("");
     setEmail("");
@@ -197,21 +250,49 @@ export default function Businesses() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>M-Pesa Paybill (optional)</Label>
-              <Input
-                placeholder="e.g. 400200"
-                value={mpesaPaybill}
-                onChange={(e) => setMpesaPaybill(e.target.value)}
-              />
+              <Label>M-Pesa payment (on receipts)</Label>
+              <Select value={mpesaMethod} onValueChange={(v) => setMpesaMethod(v as typeof mpesaMethod)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="paybill">Paybill</SelectItem>
+                  <SelectItem value="till">Buy Goods (Till)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>M-Pesa Till / Buy Goods (optional)</Label>
-              <Input
-                placeholder="e.g. 5200000"
-                value={mpesaTill}
-                onChange={(e) => setMpesaTill(e.target.value)}
-              />
-            </div>
+
+            {mpesaMethod === "paybill" && (
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1.5">
+                  <Label>Paybill (business) number</Label>
+                  <Input
+                    placeholder="e.g. 400200"
+                    value={mpesaPaybill}
+                    onChange={(e) => setMpesaPaybill(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Account number</Label>
+                  <Input
+                    placeholder="e.g. the business name / room"
+                    value={mpesaAccount}
+                    onChange={(e) => setMpesaAccount(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+            {mpesaMethod === "till" && (
+              <div className="space-y-1.5">
+                <Label>Till / Buy Goods number</Label>
+                <Input
+                  placeholder="e.g. 5200000"
+                  value={mpesaTill}
+                  onChange={(e) => setMpesaTill(e.target.value)}
+                />
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label>Admin Full Name</Label>
               <Input
@@ -314,51 +395,102 @@ export default function Businesses() {
           ) : (
             <div className="space-y-3">
               {orgs.map((o) => (
-                <div
-                  key={o.id}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border rounded-lg p-4"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium truncate">{o.name}</p>
-                      <Badge
-                        variant="outline"
-                        className={
-                          o.active
-                            ? "border-green-200 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
-                            : "border-amber-200 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-                        }
-                      >
-                        {o.active ? "Active" : "Suspended"}
-                      </Badge>
+                <div key={o.id} className="border rounded-lg overflow-hidden">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium truncate">{o.name}</p>
+                        <Badge
+                          variant="outline"
+                          className={
+                            o.active
+                              ? "border-green-200 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                              : "border-amber-200 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                          }
+                        >
+                          {o.active ? "Active" : "Suspended"}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {o.tagline ?? "—"}
+                        {o.phone ? ` · ${o.phone}` : ""}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Since{" "}
+                        {new Date(o.created_at).toLocaleDateString("en-KE", {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                        })}
+                      </p>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      {o.tagline ?? "—"}
-                      {o.phone ? ` · ${o.phone}` : ""}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Since{" "}
-                      {new Date(o.created_at).toLocaleDateString("en-KE", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                      })}
-                    </p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5"
+                        onClick={() => toggleStaff(o.id)}
+                      >
+                        <Users className="h-3.5 w-3.5" />
+                        Users
+                        {openOrg === o.id ? (
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                      <Button
+                        variant={o.active ? "outline" : "default"}
+                        size="sm"
+                        className="gap-1.5"
+                        disabled={busyId === o.id}
+                        onClick={() => toggleActive(o)}
+                      >
+                        {busyId === o.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Power className="h-3.5 w-3.5" />
+                        )}
+                        {o.active ? "Suspend" : "Restore"}
+                      </Button>
+                    </div>
                   </div>
-                  <Button
-                    variant={o.active ? "outline" : "default"}
-                    size="sm"
-                    className="gap-1.5 shrink-0"
-                    disabled={busyId === o.id}
-                    onClick={() => toggleActive(o)}
-                  >
-                    {busyId === o.id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Power className="h-3.5 w-3.5" />
-                    )}
-                    {o.active ? "Suspend" : "Restore"}
-                  </Button>
+
+                  {openOrg === o.id && (
+                    <div className="border-t bg-muted/30 p-4">
+                      {loadingStaff === o.id ? (
+                        <div className="flex justify-center py-4">
+                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : (staffByOrg[o.id] ?? []).length === 0 ? (
+                        <p className="text-xs text-muted-foreground text-center py-2">
+                          No users yet.
+                        </p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+                            {staffByOrg[o.id].length} user(s)
+                          </p>
+                          {staffByOrg[o.id].map((u) => (
+                            <div
+                              key={u.id}
+                              className="flex items-center justify-between gap-2 text-sm border-b last:border-0 pb-1.5 last:pb-0"
+                            >
+                              <div className="min-w-0">
+                                <span className="font-medium">{u.full_name ?? "—"}</span>
+                                <span className="text-xs text-muted-foreground ml-2 truncate">
+                                  {u.email}
+                                </span>
+                              </div>
+                              <Badge variant="secondary" className="text-[10px] shrink-0">
+                                {ROLE_LABEL[u.role] ?? u.role}
+                              </Badge>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

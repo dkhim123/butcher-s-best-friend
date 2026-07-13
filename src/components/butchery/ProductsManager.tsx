@@ -20,6 +20,7 @@ import {
   DEPARTMENT_LABELS,
   FOOD_GROUP_LABELS,
   FoodGroup,
+  isIngredient,
   Product,
   ProductType,
 } from "@/lib/butchery-types";
@@ -143,6 +144,7 @@ interface NewDraft {
   kind: Kind;
   department: Department;
   price: string;
+  cost: string; // buying price per unit (optional)
   openingStock: string;
   containerMl: number; // bottle size for spirits
 }
@@ -152,6 +154,7 @@ const blankDraft = (department: Department): NewDraft => ({
   kind: DEPARTMENT_KINDS[department][0] ?? "menu",
   department,
   price: "",
+  cost: "",
   openingStock: "",
   containerMl: 750,
 });
@@ -162,9 +165,10 @@ export const ProductsManager = () => {
   const { forProduct: servingsFor, add: addServing, remove: removeServing } = useServings();
   const { byProductId, addStock } = useStockOnHand();
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState<{ name: string; price: string }>({
+  const [editDraft, setEditDraft] = useState<{ name: string; price: string; cost: string }>({
     name: "",
     price: "",
+    cost: "",
   });
   const [newP, setNewP] = useState<NewDraft>(() => blankDraft(activeDepartment));
   const [customBottle, setCustomBottle] = useState(false);
@@ -229,24 +233,47 @@ export const ProductsManager = () => {
   };
 
   const meta = KIND_META[newP.kind];
+  // Ingredients are bought & used in the kitchen, never sold — so the form
+  // hides "Selling price" for them and keeps only the buying price.
+  const isIngredientKind = meta.foodGroup === "raw_material";
 
   const startEdit = (p: Product) => {
     setEditingId(p.id);
-    setEditDraft({ name: p.name, price: String(p.price) });
+    setEditDraft({
+      name: p.name,
+      price: String(p.price),
+      cost: p.costPrice != null ? String(p.costPrice) : "",
+    });
   };
 
   const saveEdit = (id: string) => {
-    const priceNum = Number(editDraft.price);
-    if (!editDraft.name.trim() || !Number.isFinite(priceNum) || priceNum <= 0) {
-      toast.error("Enter a valid name and price");
+    const target = products.find((p) => p.id === id);
+    const ingredient = target ? isIngredient(target) : false;
+    // Ingredients keep their 0 selling price; everything else needs a real one.
+    const priceNum = ingredient ? target?.price ?? 0 : Number(editDraft.price);
+    if (!editDraft.name.trim()) {
+      toast.error("Enter a name");
       return;
     }
-    // Editing only touches name + price. The kind / category / track-stock
+    if (!ingredient && (!Number.isFinite(priceNum) || priceNum <= 0)) {
+      toast.error("Enter a valid selling price");
+      return;
+    }
+    // An empty cost means "unknown" (null). A typed cost must be a valid,
+    // non-negative number.
+    const costTrimmed = editDraft.cost.trim();
+    const costNum = Number(costTrimmed);
+    if (costTrimmed && (!Number.isFinite(costNum) || costNum < 0)) {
+      toast.error("Enter a valid buying price");
+      return;
+    }
+    // Editing only touches name + price + cost. The kind / category / track-stock
     // are immutable after creation. If the owner wants to change those,
     // they delete and re-add (cleaner audit trail anyway).
     update(id, {
       name: editDraft.name.trim(),
       price: priceNum,
+      costPrice: costTrimmed ? costNum : null,
       category: deriveCategory(editDraft.name),
     });
     setEditingId(null);
@@ -255,59 +282,136 @@ export const ProductsManager = () => {
 
   const isSpirit = newP.kind === "spirit";
 
-  const handleAdd = async () => {
-    const priceNum = Number(newP.price);
-    if (!newP.name.trim() || !Number.isFinite(priceNum) || priceNum <= 0) {
-      toast.error("Enter a valid name and price");
-      return;
-    }
-    if (isSpirit && (!Number.isFinite(newP.containerMl) || newP.containerMl <= 0)) {
-      toast.error("Enter a valid bottle size in ml");
-      return;
-    }
-    const openingNum = Number(newP.openingStock);
-    const opening =
-      meta.trackStock && Number.isFinite(openingNum) && openingNum > 0
-        ? openingNum
-        : 0;
+  // ── Bulk add ──────────────────────────────────────────────────────────────
+  // Queue several products (e.g. a whole drinks list) then save them in one go.
+  const [queue, setQueue] = useState<NewDraft[]>([]);
+  const [savingAll, setSavingAll] = useState(false);
 
-    const created = await add(
-      {
-        name: newP.name.trim(),
-        type: meta.type,
+  /**
+   * validateDraft — checks a single draft and, if valid, returns the exact
+   * payload we'd send to the store. Returns an error message otherwise. Shared
+   * by the single "Add product" button and the bulk queue so the rules can
+   * never drift apart.
+   */
+  const validateDraft = (
+    d: NewDraft,
+  ):
+    | { error: string }
+    | { product: Omit<Product, "id">; opening: number; spirit: boolean; containerMl: number } => {
+    const dMeta = KIND_META[d.kind];
+    const spirit = d.kind === "spirit";
+    const ingredient = dMeta.foodGroup === "raw_material";
+    // Ingredients aren't sold, so they have no selling price — store 0.
+    const priceNum = ingredient ? 0 : Number(d.price);
+    if (!d.name.trim()) {
+      return { error: `"${d.name || "Unnamed"}": enter a name` };
+    }
+    if (!ingredient && (!Number.isFinite(priceNum) || priceNum <= 0)) {
+      return { error: `"${d.name}": enter a valid selling price` };
+    }
+    const costTrimmed = d.cost.trim();
+    const costNum = Number(costTrimmed);
+    if (costTrimmed && (!Number.isFinite(costNum) || costNum < 0)) {
+      return { error: `"${d.name}": enter a valid buying price (or leave it blank)` };
+    }
+    if (spirit && (!Number.isFinite(d.containerMl) || d.containerMl <= 0)) {
+      return { error: `"${d.name}": enter a valid bottle size in ml` };
+    }
+    const openingNum = Number(d.openingStock);
+    const opening =
+      dMeta.trackStock && Number.isFinite(openingNum) && openingNum > 0 ? openingNum : 0;
+    return {
+      product: {
+        name: d.name.trim(),
+        type: dMeta.type,
         price: priceNum,
-        unit: meta.unit,
-        category: deriveCategory(newP.name),
-        foodGroup: meta.foodGroup,
-        department: newP.department,
-        trackStock: meta.trackStock,
-        containerMl: isSpirit ? newP.containerMl : null,
+        unit: dMeta.unit,
+        category: deriveCategory(d.name),
+        foodGroup: dMeta.foodGroup,
+        department: d.department,
+        trackStock: dMeta.trackStock,
+        containerMl: spirit ? d.containerMl : null,
+        costPrice: costTrimmed ? costNum : null,
       },
       opening,
-    );
+      spirit,
+      containerMl: d.containerMl,
+    };
+  };
 
-    // A spirit/wine starts sellable as a full bottle. The user adds smaller
-    // pours (Tot, Glass…) afterwards from the product's Servings editor.
-    if (isSpirit && created) {
+  /** commitDraft — persists one validated draft (product + spirit's full-bottle
+   *  serving). Throws on failure so callers can report it. */
+  const commitDraft = async (d: NewDraft) => {
+    const v = validateDraft(d);
+    if ("error" in v) throw new Error(v.error);
+    const created = await add(v.product, v.opening);
+    if (v.spirit && created) {
       try {
         await addServing({
           productId: created.id,
           name: "Full bottle",
-          volumeMl: newP.containerMl,
-          price: priceNum,
+          volumeMl: v.containerMl,
+          price: v.product.price,
           sort: 100,
         });
       } catch {
         /* non-fatal: the product still exists, they can add servings manually */
       }
     }
+  };
 
-    setNewP(blankDraft(newP.department));
-    toast.success(
-      opening > 0
-        ? `Added — starting with ${opening} ${meta.unit}`
-        : "Product added",
-    );
+  const handleAdd = async () => {
+    const v = validateDraft(newP);
+    if ("error" in v) {
+      toast.error(v.error);
+      return;
+    }
+    try {
+      await commitDraft(newP);
+      setNewP(blankDraft(newP.department));
+      toast.success(
+        v.opening > 0 ? `Added — starting with ${v.opening} ${meta.unit}` : "Product added",
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't add the product");
+    }
+  };
+
+  /** Queue the current draft, keeping the chosen department + kind so you can
+   *  rattle off many of the same type (e.g. lots of spirits) quickly. */
+  const addToQueue = () => {
+    const v = validateDraft(newP);
+    if ("error" in v) {
+      toast.error(v.error);
+      return;
+    }
+    setQueue((q) => [...q, newP]);
+    setNewP((p) => ({ ...blankDraft(p.department), kind: p.kind, containerMl: p.containerMl }));
+  };
+
+  const removeFromQueue = (idx: number) =>
+    setQueue((q) => q.filter((_, i) => i !== idx));
+
+  const handleSaveAll = async () => {
+    if (queue.length === 0) return;
+    setSavingAll(true);
+    const failed: NewDraft[] = [];
+    for (const item of queue) {
+      try {
+        await commitDraft(item);
+      } catch {
+        failed.push(item);
+      }
+    }
+    setSavingAll(false);
+    const okCount = queue.length - failed.length;
+    if (okCount > 0) toast.success(`Added ${okCount} product${okCount === 1 ? "" : "s"}`);
+    if (failed.length > 0) {
+      toast.error(`${failed.length} couldn't be added — left in the list to fix`);
+      setQueue(failed);
+    } else {
+      setQueue([]);
+    }
   };
 
   return (
@@ -415,14 +519,38 @@ export const ProductsManager = () => {
             </div>
           )}
 
+          {/* Selling price — hidden for ingredients (they're never sold). */}
+          {!isIngredientKind && (
+            <div className="space-y-1.5">
+              <Label>Selling price ({isSpirit ? "per full bottle" : meta.pricing})</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                placeholder="0"
+                value={newP.price}
+                onChange={(e) => setNewP({ ...newP, price: e.target.value })}
+              />
+            </div>
+          )}
+
+          {/* Buying price (cost). For sold items it powers profit = selling −
+              buying in the report. For a spirit/wine it's the cost of a WHOLE
+              bottle; each pour's cost is worked out from its ml. For an
+              INGREDIENT it's the only price — it drives the kitchen food-cost
+              (usage × buying price) compared against meals sold. */}
           <div className="space-y-1.5">
-            <Label>Price ({isSpirit ? "per full bottle" : meta.pricing})</Label>
+            <Label className="flex items-center gap-1.5">
+              Buying price ({isSpirit ? "per full bottle" : meta.pricing})
+              <span className="text-xs font-normal text-muted-foreground">
+                {isIngredientKind ? "Recommended" : "Optional"}
+              </span>
+            </Label>
             <Input
               type="number"
               inputMode="decimal"
-              placeholder="0"
-              value={newP.price}
-              onChange={(e) => setNewP({ ...newP, price: e.target.value })}
+              placeholder={isSpirit ? "What the bottle cost you" : "What you paid"}
+              value={newP.cost}
+              onChange={(e) => setNewP({ ...newP, cost: e.target.value })}
             />
           </div>
         </div>
@@ -454,11 +582,70 @@ export const ProductsManager = () => {
           </div>
         )}
 
-        <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex flex-col sm:flex-row justify-end gap-2">
+          <Button variant="outline" onClick={addToQueue} className="px-5">
+            <PackagePlus className="h-4 w-4 mr-1" /> Add to list
+          </Button>
           <Button onClick={handleAdd} className="bg-gradient-primary px-6">
             <Plus className="h-4 w-4 mr-1" /> Add product
           </Button>
         </div>
+
+        {/* Bulk queue — add several (e.g. a whole drinks list) then save at once. */}
+        {queue.length > 0 && (
+          <div className="mt-4 rounded-lg border bg-accent/30 p-3">
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <p className="text-sm font-semibold">
+                {queue.length} product{queue.length === 1 ? "" : "s"} ready to save
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setQueue([])}
+                  disabled={savingAll}
+                >
+                  Clear
+                </Button>
+                <Button
+                  size="sm"
+                  className="bg-gradient-primary"
+                  onClick={() => void handleSaveAll()}
+                  disabled={savingAll}
+                >
+                  {savingAll ? "Saving…" : `Save all ${queue.length}`}
+                </Button>
+              </div>
+            </div>
+            <ul className="space-y-1.5">
+              {queue.map((item, idx) => (
+                <li
+                  key={idx}
+                  className="flex items-center gap-2 rounded-md bg-background/60 px-3 py-2 text-sm"
+                >
+                  <span className="font-medium truncate">{item.name}</span>
+                  <Badge variant="secondary" className="text-[10px] shrink-0">
+                    {KIND_META[item.kind].label.split(" ")[0]}
+                  </Badge>
+                  <span className="text-muted-foreground shrink-0">
+                    {ksh(Number(item.price))}
+                    {item.cost.trim() ? ` · cost ${ksh(Number(item.cost))}` : ""}
+                    {item.openingStock.trim() ? ` · ${item.openingStock} ${KIND_META[item.kind].unit}` : ""}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeFromQueue(idx)}
+                    disabled={savingAll}
+                    className="ml-auto rounded-full hover:bg-destructive/20 p-1 shrink-0"
+                    title="Remove from list"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Card>
 
       {/* Existing products — proper table layout. Compact, scannable,
@@ -536,24 +723,74 @@ export const ProductsManager = () => {
                           </Badge>
                         </td>
 
-                        {/* PRICE cell — right-aligned, currency styling */}
+                        {/* PRICE cell — selling price, plus buying price &
+                            margin as subtext (right-aligned, currency styling) */}
                         <td className="p-3 text-right align-middle">
                           {editing ? (
-                            <Input
-                              type="number"
-                              inputMode="decimal"
-                              value={editDraft.price}
-                              onChange={(e) =>
-                                setEditDraft({ ...editDraft, price: e.target.value })
-                              }
-                              className="h-9 w-28 ml-auto text-right no-spinner"
-                            />
+                            <div className="space-y-1.5">
+                              {/* Ingredients have no selling price — only cost. */}
+                              {!isIngredient(p) && (
+                                <Input
+                                  type="number"
+                                  inputMode="decimal"
+                                  value={editDraft.price}
+                                  onChange={(e) =>
+                                    setEditDraft({ ...editDraft, price: e.target.value })
+                                  }
+                                  placeholder="Sell"
+                                  title="Selling price"
+                                  className="h-9 w-28 ml-auto text-right no-spinner"
+                                />
+                              )}
+                              <Input
+                                type="number"
+                                inputMode="decimal"
+                                value={editDraft.cost}
+                                onChange={(e) =>
+                                  setEditDraft({ ...editDraft, cost: e.target.value })
+                                }
+                                placeholder="Buy (cost)"
+                                title="Buying price"
+                                className="h-9 w-28 ml-auto text-right no-spinner"
+                              />
+                            </div>
+                          ) : isIngredient(p) ? (
+                            // Ingredient: show the buying price only — it's not sold.
+                            <div className="tabular-nums">
+                              <span className="text-xs text-muted-foreground italic block">
+                                not sold
+                              </span>
+                              {p.costPrice != null ? (
+                                <span className="text-[11px] font-normal block text-muted-foreground">
+                                  cost {ksh(p.costPrice)} / {p.unit}
+                                </span>
+                              ) : (
+                                <span className="text-[11px] font-normal block text-amber-600">
+                                  set buying price
+                                </span>
+                              )}
+                            </div>
                           ) : (
                             <div className="font-bold text-primary tabular-nums">
                               {ksh(p.price)}
                               <span className="text-[11px] text-muted-foreground font-normal block">
                                 / {p.unit}
                               </span>
+                              {p.costPrice != null && (
+                                <span className="text-[11px] font-normal block text-muted-foreground">
+                                  cost {ksh(p.costPrice)}
+                                  <span
+                                    className={
+                                      p.price - p.costPrice >= 0
+                                        ? "text-success ml-1"
+                                        : "text-destructive ml-1"
+                                    }
+                                  >
+                                    ({p.price - p.costPrice >= 0 ? "+" : ""}
+                                    {ksh(p.price - p.costPrice)})
+                                  </span>
+                                </span>
+                              )}
                             </div>
                           )}
                         </td>
@@ -733,32 +970,58 @@ export const ProductsManager = () => {
                                 <p className="text-xs font-medium mb-1.5">
                                   How <strong>{p.name}</strong> can be sold
                                   <span className="text-muted-foreground font-normal">
-                                    {" "}(bottle is {p.containerMl} ml)
+                                    {" "}(bottle is {p.containerMl} ml
+                                    {p.costPrice != null && `, cost ${ksh(p.costPrice)}`})
                                   </span>
                                 </p>
+                                {p.costPrice == null && (
+                                  <p className="text-[11px] text-amber-600 mb-1.5">
+                                    Set this bottle's buying price (Edit ✎) to see
+                                    profit per Tot / Glass / bottle here.
+                                  </p>
+                                )}
                                 <div className="flex flex-wrap gap-2">
                                   {servingsFor(p.id).length === 0 ? (
                                     <span className="text-xs text-muted-foreground">
                                       No servings yet.
                                     </span>
                                   ) : (
-                                    servingsFor(p.id).map((sv) => (
-                                      <Badge
-                                        key={sv.id}
-                                        variant="secondary"
-                                        className="gap-1.5 py-1 pl-2.5 pr-1"
-                                      >
-                                        {sv.name} · {sv.volumeMl}ml · {ksh(sv.price)}
-                                        <button
-                                          type="button"
-                                          onClick={() => removeServing(sv.id)}
-                                          className="rounded-full hover:bg-destructive/20 p-0.5"
-                                          title="Remove serving"
+                                    servingsFor(p.id).map((sv) => {
+                                      // Cost of THIS pour = its share of the bottle's cost.
+                                      const pourCost =
+                                        p.costPrice != null && p.containerMl
+                                          ? (sv.volumeMl / p.containerMl) * p.costPrice
+                                          : null;
+                                      const pourProfit =
+                                        pourCost != null ? sv.price - pourCost : null;
+                                      return (
+                                        <Badge
+                                          key={sv.id}
+                                          variant="secondary"
+                                          className="gap-1.5 py-1 pl-2.5 pr-1"
                                         >
-                                          <X className="h-3 w-3" />
-                                        </button>
-                                      </Badge>
-                                    ))
+                                          {sv.name} · {sv.volumeMl}ml · {ksh(sv.price)}
+                                          {pourProfit != null && (
+                                            <span
+                                              className={
+                                                pourProfit >= 0 ? "text-success" : "text-destructive"
+                                              }
+                                            >
+                                              {pourProfit >= 0 ? "+" : ""}
+                                              {ksh(pourProfit)}
+                                            </span>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => removeServing(sv.id)}
+                                            className="rounded-full hover:bg-destructive/20 p-0.5"
+                                            title="Remove serving"
+                                          >
+                                            <X className="h-3 w-3" />
+                                          </button>
+                                        </Badge>
+                                      );
+                                    })
                                   )}
                                 </div>
                               </div>

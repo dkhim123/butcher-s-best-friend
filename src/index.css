@@ -85,6 +85,10 @@
     --border: 20 15% 20%;
     --input: 20 15% 20%;
     --ring: 8 75% 55%;
+    /* Night-mode surface gradient — the :root one is light-only, so without
+       this override every card header / nav bar using bg-gradient-surface
+       stayed washed-out white in dark mode. */
+    --gradient-surface: linear-gradient(180deg, hsl(20 22% 13%), hsl(20 20% 9%));
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;

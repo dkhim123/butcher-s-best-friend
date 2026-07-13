@@ -44,6 +44,7 @@ interface AuthContextValue {
     phone?: string;
     address?: string;
     mpesaPaybill?: string;
+    mpesaPaybillAccount?: string;
     mpesaTill?: string;
   }) => Promise<{ error: string | null }>;
   /** Super-admin only: suspend or restore a business. */
@@ -347,6 +348,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     phone?: string;
     address?: string;
     mpesaPaybill?: string;
+    mpesaPaybillAccount?: string;
     mpesaTill?: string;
   }) => {
     if (!session) return { error: "Not authenticated" };
@@ -366,6 +368,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       p_phone: params.phone?.trim() || null,
       p_address: params.address?.trim() || null,
       p_mpesa_paybill: params.mpesaPaybill?.trim() || null,
+      p_mpesa_paybill_account: params.mpesaPaybillAccount?.trim() || null,
       p_mpesa_till: params.mpesaTill?.trim() || null,
     });
     if (error) return { error: error.message };

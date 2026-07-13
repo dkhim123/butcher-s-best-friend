@@ -32,15 +32,17 @@ CREATE TABLE IF NOT EXISTS public.organisations (
   phone         TEXT,
   address       TEXT,
   mpesa_paybill TEXT,
+  mpesa_paybill_account TEXT,
   mpesa_till    TEXT,
   active        BOOLEAN NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS tagline       TEXT;
-ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS phone         TEXT;
-ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS address       TEXT;
-ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS mpesa_paybill TEXT;
-ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS mpesa_till    TEXT;
+ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS tagline               TEXT;
+ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS phone                 TEXT;
+ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS address               TEXT;
+ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS mpesa_paybill         TEXT;
+ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS mpesa_paybill_account TEXT;
+ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS mpesa_till            TEXT;
 ALTER TABLE public.organisations ADD COLUMN IF NOT EXISTS active        BOOLEAN NOT NULL DEFAULT TRUE;
 
 -- 1.2 Branches
@@ -80,6 +82,7 @@ CREATE TABLE IF NOT EXISTS public.products (
   department   TEXT NOT NULL DEFAULT 'restaurant',
   track_stock  BOOLEAN NOT NULL DEFAULT FALSE,
   container_ml INTEGER CHECK (container_ml IS NULL OR container_ml > 0),
+  cost_price   NUMERIC(12,2) CHECK (cost_price IS NULL OR cost_price >= 0),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS category     TEXT;
@@ -87,6 +90,7 @@ ALTER TABLE public.products ADD COLUMN IF NOT EXISTS food_group   TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS department   TEXT NOT NULL DEFAULT 'restaurant';
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS track_stock  BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS container_ml INTEGER;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS cost_price   NUMERIC(12,2);
 ALTER TABLE public.products DROP CONSTRAINT IF EXISTS products_department_check;
 ALTER TABLE public.products ADD CONSTRAINT products_department_check
   CHECK (department IN ('restaurant','bar','rooms'));
@@ -207,6 +211,16 @@ ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS payments    JSONB NOT NULL DEF
 ALTER TABLE public.sales DROP CONSTRAINT IF EXISTS sales_payment_check;
 ALTER TABLE public.sales ADD CONSTRAINT sales_payment_check
   CHECK (payment IN ('cash','mpesa','credit','split'));
+-- Cancellation workflow: a cashier requests a cancel, an admin/manager approves.
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cancel_state       TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cancel_reason      TEXT;
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cancel_by          UUID REFERENCES public.profiles(id) ON DELETE SET NULL;
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cancel_approved_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL;
+ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cancelled_at       TIMESTAMPTZ;
+ALTER TABLE public.sales DROP CONSTRAINT IF EXISTS sales_cancel_state_check;
+ALTER TABLE public.sales ADD CONSTRAINT sales_cancel_state_check
+  CHECK (cancel_state IN ('none','requested','cancelled','rejected'));
+CREATE INDEX IF NOT EXISTS idx_sales_cancel_state ON public.sales (org_id, cancel_state);
 
 -- 1.12 Sale items — line-items (with optional bar serving info)
 CREATE TABLE IF NOT EXISTS public.sale_items (
@@ -338,6 +352,7 @@ CREATE VIEW public.v_customer_balances WITH (security_invoker = true) AS
   LEFT JOIN (
     SELECT customer_id, SUM(subtotal) AS owed
     FROM public.sales WHERE payment = 'credit' AND customer_id IS NOT NULL
+      AND cancel_state <> 'cancelled'
     GROUP BY customer_id
   ) o ON o.customer_id = c.id
   LEFT JOIN (
@@ -562,7 +577,8 @@ DROP FUNCTION IF EXISTS public.register_business(UUID, TEXT, TEXT, TEXT, TEXT, T
 CREATE OR REPLACE FUNCTION public.register_business(
   p_actor_id UUID, p_email TEXT, p_password TEXT, p_full_name TEXT, p_business_name TEXT,
   p_tagline TEXT DEFAULT NULL, p_phone TEXT DEFAULT NULL, p_address TEXT DEFAULT NULL,
-  p_mpesa_paybill TEXT DEFAULT NULL, p_mpesa_till TEXT DEFAULT NULL)
+  p_mpesa_paybill TEXT DEFAULT NULL, p_mpesa_till TEXT DEFAULT NULL,
+  p_mpesa_paybill_account TEXT DEFAULT NULL)
 RETURNS JSON LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
 DECLARE v_email TEXT := lower(trim(p_email)); v_org_id UUID; v_branch_id UUID; v_profile public.profiles%ROWTYPE;
 BEGIN
@@ -577,10 +593,12 @@ BEGIN
   IF EXISTS (SELECT 1 FROM public.profiles WHERE email = v_email) THEN
     RAISE EXCEPTION 'Email already registered' USING ERRCODE = '23505'; END IF;
 
-  INSERT INTO public.organisations (name, tagline, phone, address, mpesa_paybill, mpesa_till)
+  INSERT INTO public.organisations
+      (name, tagline, phone, address, mpesa_paybill, mpesa_paybill_account, mpesa_till)
     VALUES (trim(p_business_name),
             NULLIF(trim(COALESCE(p_tagline,'')),''), NULLIF(trim(COALESCE(p_phone,'')),''),
             NULLIF(trim(COALESCE(p_address,'')),''), NULLIF(trim(COALESCE(p_mpesa_paybill,'')),''),
+            NULLIF(trim(COALESCE(p_mpesa_paybill_account,'')),''),
             NULLIF(trim(COALESCE(p_mpesa_till,'')),''))
     RETURNING id INTO v_org_id;
   INSERT INTO public.branches (org_id, name) VALUES (v_org_id, 'Main Branch') RETURNING id INTO v_branch_id;
@@ -675,6 +693,7 @@ LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
   FROM public.sale_items si JOIN public.sales s ON s.id = si.sale_id JOIN public.products p ON p.id = si.product_id
   WHERE s.org_id = p_org_id AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
     AND (p_department IS NULL OR p.department = p_department) AND s.date BETWEEN p_from AND p_to
+    AND s.cancel_state <> 'cancelled'
   GROUP BY p.category, p.food_group ORDER BY 4 DESC;
 $$;
 
@@ -688,6 +707,7 @@ LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
     FROM public.sale_items si JOIN public.sales s ON s.id = si.sale_id JOIN public.products p ON p.id = si.product_id
     WHERE s.org_id = p_org_id AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
       AND (p_department IS NULL OR p.department = p_department) AND s.date BETWEEN p_from AND p_to
+      AND s.cancel_state <> 'cancelled'
     GROUP BY p.food_group
   ), total AS (SELECT NULLIF(SUM(revenue),0) AS grand FROM base)
   SELECT b.food_group, b.revenue, b.txn_count, ROUND((b.revenue / COALESCE(t.grand,1))*100,1)
@@ -737,16 +757,81 @@ BEGIN
   -- of any split sales.
   SELECT
     COALESCE((SELECT SUM(subtotal) FROM public.sales
-               WHERE shift_id = p_shift_id AND payment = 'cash'), 0)
+               WHERE shift_id = p_shift_id AND payment = 'cash'
+                 AND cancel_state <> 'cancelled'), 0)
     + COALESCE((SELECT SUM((p->>'amount')::numeric)
                 FROM public.sales s, jsonb_array_elements(s.payments) p
                 WHERE s.shift_id = p_shift_id AND s.payment = 'split'
+                  AND s.cancel_state <> 'cancelled'
                   AND p->>'method' = 'cash'), 0)
     INTO v_cash;
   UPDATE public.shifts SET status='closed', closed_at=NOW(), expected_cash=v_shift.opening_float+v_cash,
          counted_cash=p_counted_cash, note=COALESCE(p_note,note) WHERE id = p_shift_id RETURNING * INTO v_shift;
   RETURN v_shift;
 END; $$;
+
+
+-- 3.12 Sale cancellation workflow (cashier requests → admin/manager decides)
+CREATE OR REPLACE FUNCTION public.request_cancel(p_actor_id UUID, p_sale_id UUID, p_reason TEXT DEFAULT NULL)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+BEGIN
+  UPDATE public.sales
+     SET cancel_state = 'requested',
+         cancel_reason = NULLIF(trim(COALESCE(p_reason,'')),''),
+         cancel_by = p_actor_id
+   WHERE id = p_sale_id AND cancel_state IN ('none','rejected');
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Sale not found or already being processed' USING ERRCODE = '22023';
+  END IF;
+END; $$;
+GRANT EXECUTE ON FUNCTION public.request_cancel(UUID, UUID, TEXT) TO anon;
+
+CREATE OR REPLACE FUNCTION public.reject_cancel(p_actor_id UUID, p_sale_id UUID)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+DECLARE v_org UUID;
+BEGIN
+  SELECT org_id INTO v_org FROM public.sales WHERE id = p_sale_id;
+  IF NOT EXISTS (SELECT 1 FROM public.profiles
+                 WHERE id = p_actor_id AND role IN ('admin','manager') AND org_id = v_org) THEN
+    RAISE EXCEPTION 'Only an admin or manager can decide cancellations' USING ERRCODE = '42501';
+  END IF;
+  UPDATE public.sales SET cancel_state = 'rejected'
+   WHERE id = p_sale_id AND cancel_state = 'requested';
+END; $$;
+GRANT EXECUTE ON FUNCTION public.reject_cancel(UUID, UUID) TO anon;
+
+-- Approve: void the sale AND return the stock it removed (reverse each of its
+-- sale stock_movements). Cancelled sales are excluded from every total.
+CREATE OR REPLACE FUNCTION public.approve_cancel(p_actor_id UUID, p_sale_id UUID)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+DECLARE v_org UUID; v_branch UUID; v_receipt TEXT; m RECORD;
+BEGIN
+  SELECT org_id, branch_id, receipt_no INTO v_org, v_branch, v_receipt
+    FROM public.sales WHERE id = p_sale_id;
+  IF v_org IS NULL THEN RAISE EXCEPTION 'Sale not found' USING ERRCODE = '23503'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.profiles
+                 WHERE id = p_actor_id AND role IN ('admin','manager') AND org_id = v_org) THEN
+    RAISE EXCEPTION 'Only an admin or manager can approve cancellations' USING ERRCODE = '42501';
+  END IF;
+
+  FOR m IN
+    SELECT sm.id, sm.product_id, sm.delta_qty
+    FROM public.stock_movements sm
+    JOIN public.sale_items si ON si.id = sm.ref_id
+    WHERE sm.ref_table = 'sale_items' AND sm.reason = 'sale' AND si.sale_id = p_sale_id
+  LOOP
+    INSERT INTO public.stock_movements
+      (org_id, branch_id, product_id, delta_qty, reason, ref_table, ref_id, note)
+    VALUES (v_org, v_branch, m.product_id, -m.delta_qty, 'adjustment', 'sale_cancel', m.id,
+            'Sale ' || v_receipt || ' cancelled')
+    ON CONFLICT DO NOTHING;
+  END LOOP;
+
+  UPDATE public.sales
+     SET cancel_state = 'cancelled', cancelled_at = NOW(), cancel_approved_by = p_actor_id
+   WHERE id = p_sale_id;
+END; $$;
+GRANT EXECUTE ON FUNCTION public.approve_cancel(UUID, UUID) TO anon;
 
 
 -- ╔══════════════════════════════════════════════════════════════╗

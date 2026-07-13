@@ -12,6 +12,13 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   ArrowLeft,
   Building2,
   Image,
@@ -61,7 +68,11 @@ export default function Settings() {
   const [tagline, setTagline] = useState(org?.tagline ?? "");
   const [phone, setPhone] = useState(org?.phone ?? "");
   const [address, setAddress] = useState(org?.address ?? "");
+  const [mpesaMethod, setMpesaMethod] = useState<"none" | "paybill" | "till">(
+    org?.mpesa_till ? "till" : org?.mpesa_paybill ? "paybill" : "none",
+  );
   const [mpesaPaybill, setMpesaPaybill] = useState(org?.mpesa_paybill ?? "");
+  const [mpesaAccount, setMpesaAccount] = useState(org?.mpesa_paybill_account ?? "");
   const [mpesaTill, setMpesaTill] = useState(org?.mpesa_till ?? "");
   const [savingReceipt, setSavingReceipt] = useState(false);
 
@@ -69,9 +80,11 @@ export default function Settings() {
     setTagline(org?.tagline ?? "");
     setPhone(org?.phone ?? "");
     setAddress(org?.address ?? "");
+    setMpesaMethod(org?.mpesa_till ? "till" : org?.mpesa_paybill ? "paybill" : "none");
     setMpesaPaybill(org?.mpesa_paybill ?? "");
+    setMpesaAccount(org?.mpesa_paybill_account ?? "");
     setMpesaTill(org?.mpesa_till ?? "");
-  }, [org?.id, org?.tagline, org?.phone, org?.address, org?.mpesa_paybill, org?.mpesa_till]);
+  }, [org?.id, org?.tagline, org?.phone, org?.address, org?.mpesa_paybill, org?.mpesa_paybill_account, org?.mpesa_till]);
 
   const handleSaveReceipt = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,8 +96,10 @@ export default function Settings() {
         tagline: tagline.trim() || null,
         phone: phone.trim() || null,
         address: address.trim() || null,
-        mpesa_paybill: mpesaPaybill.trim() || null,
-        mpesa_till: mpesaTill.trim() || null,
+        // Keep only the chosen method's fields; clear the other.
+        mpesa_paybill: mpesaMethod === "paybill" ? mpesaPaybill.trim() || null : null,
+        mpesa_paybill_account: mpesaMethod === "paybill" ? mpesaAccount.trim() || null : null,
+        mpesa_till: mpesaMethod === "till" ? mpesaTill.trim() || null : null,
       })
       .eq("id", org.id);
     if (error) {
@@ -302,24 +317,49 @@ export default function Settings() {
                 placeholder="0700 000 000"
               />
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>M-Pesa Paybill</Label>
-                <Input
-                  value={mpesaPaybill}
-                  onChange={(e) => setMpesaPaybill(e.target.value)}
-                  placeholder="e.g. 400200"
-                />
+            <div className="space-y-1.5">
+              <Label>M-Pesa payment</Label>
+              <Select value={mpesaMethod} onValueChange={(v) => setMpesaMethod(v as typeof mpesaMethod)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="paybill">Paybill</SelectItem>
+                  <SelectItem value="till">Buy Goods (Till)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {mpesaMethod === "paybill" && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Paybill (business) number</Label>
+                  <Input
+                    value={mpesaPaybill}
+                    onChange={(e) => setMpesaPaybill(e.target.value)}
+                    placeholder="e.g. 400200"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Account number</Label>
+                  <Input
+                    value={mpesaAccount}
+                    onChange={(e) => setMpesaAccount(e.target.value)}
+                    placeholder="e.g. the business name / room"
+                  />
+                </div>
               </div>
+            )}
+            {mpesaMethod === "till" && (
               <div className="space-y-1.5">
-                <Label>M-Pesa Till / Buy Goods</Label>
+                <Label>Till / Buy Goods number</Label>
                 <Input
                   value={mpesaTill}
                   onChange={(e) => setMpesaTill(e.target.value)}
                   placeholder="e.g. 5200000"
                 />
               </div>
-            </div>
+            )}
             <div className="space-y-1.5">
               <Label>Address</Label>
               <Textarea

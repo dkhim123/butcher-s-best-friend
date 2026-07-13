@@ -61,7 +61,17 @@ export interface Product {
   trackStock: boolean;
   /** Full-bottle volume in ml for bar drinks poured by measure (else null). */
   containerMl?: number | null;
+  /** Buying cost per unit — used for profit = revenue − cost (null = unknown). */
+  costPrice?: number | null;
 }
+
+/**
+ * Raw ingredients (flour, oil, rice…) are bought and consumed in the kitchen,
+ * never rung up at the till. They carry a BUYING price (for food-cost) but no
+ * selling price. Everything else — meals, drinks — is sellable.
+ */
+export const isIngredient = (p: Pick<Product, "foodGroup">) =>
+  p.foodGroup === "raw_material";
 
 /** A way a bar drink can be sold — e.g. Tot 30ml, Glass 250ml, Full bottle 750ml. */
 export interface ProductServing {
@@ -148,6 +158,10 @@ export interface Sale {
   customerId?: string | null; // linked loan account (credit sales)
   paid?: boolean; // for credit: marked paid later
   shiftId?: string | null; // which cashier shift rang this sale
+  createdBy?: string | null; // profile id of the cashier who rang it
+  // Cancellation workflow
+  cancelState?: "none" | "requested" | "cancelled" | "rejected";
+  cancelReason?: string | null;
 }
 
 // ── Customers / loans (credit accounts) ────────────────────────────────────────

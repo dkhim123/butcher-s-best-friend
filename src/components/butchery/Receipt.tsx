@@ -1,6 +1,7 @@
 import { forwardRef } from "react";
 import { Sale, Product } from "@/lib/butchery-types";
 import { ksh, qty } from "@/lib/format";
+import { RECEIPT_CSS } from "./receipt-styles";
 
 const payLabel: Record<string, string> = {
   cash: "CASH",
@@ -8,6 +9,11 @@ const payLabel: Record<string, string> = {
   credit: "CREDIT",
   split: "SPLIT",
 };
+
+// Plain number for line amounts (currency shown once, on the TOTAL row) —
+// this is the standard supermarket look: columns of numbers, not "Ksh 250"
+// repeated on every line.
+const num = (n: number) => Math.round(n).toLocaleString("en-KE");
 
 interface Props {
   sale: Sale;
@@ -17,151 +23,156 @@ interface Props {
   tagline?: string | null;
   phone?: string | null;
   mpesaPaybill?: string | null;
+  mpesaPaybillAccount?: string | null;
   mpesaTill?: string | null;
 }
 
 export const Receipt = forwardRef<HTMLDivElement, Props>(
-  ({ sale, products, shopName = "Your Business", logoUrl, tagline, phone, mpesaPaybill, mpesaTill }, ref) => {
+  ({ sale, products, shopName = "Your Business", logoUrl, tagline, phone, mpesaPaybill, mpesaPaybillAccount, mpesaTill }, ref) => {
     const productOf = (id: string) => products.find((p) => p.id === id);
     const dt = new Date(sale.timestamp);
 
     return (
-      <div
-        ref={ref}
-        className="receipt-print bg-white text-black font-mono text-[12px] leading-tight w-[300px] p-4 mx-auto"
-      >
-        <div className="text-center mb-2">
-          {logoUrl && (
-            <img
-              src={logoUrl}
-              alt={shopName}
-              className="h-14 w-14 object-contain mx-auto mb-1"
-            />
-          )}
-          <p className="text-base font-bold uppercase tracking-wide">{shopName}</p>
-          {tagline && <p className="text-[10px]">{tagline}</p>}
-          {phone && <p className="text-[10px]">Tel: {phone}</p>}
-        </div>
-        <div className="border-t border-b border-dashed border-black py-1 mb-2 text-[11px]">
-          <div className="flex justify-between">
-            <span>Receipt:</span>
-            <span className="font-bold">{sale.receiptNo}</span>
+      <>
+        {/* Sibling <style>, NOT inside the ref'd node — so it isn't duplicated
+            when doPrint() copies the receipt's outerHTML into the iframe. The
+            print iframe injects the same RECEIPT_CSS into its <head>. */}
+        <style dangerouslySetInnerHTML={{ __html: RECEIPT_CSS }} />
+
+        <div ref={ref} className="rcpt">
+          {/* Header */}
+          {logoUrl && <img src={logoUrl} alt={shopName} className="rcpt-logo" />}
+          <p className="rcpt-name">{shopName}</p>
+          {tagline && <p className="rcpt-sub">{tagline}</p>}
+          {phone && <p className="rcpt-sub">Tel: {phone}</p>}
+
+          <hr className="rcpt-hr" />
+
+          {/* Meta */}
+          <div className="rcpt-row">
+            <span>Receipt</span>
+            <span>{sale.receiptNo}</span>
           </div>
-          <div className="flex justify-between">
-            <span>Date:</span>
+          <div className="rcpt-row">
+            <span>Date</span>
             <span>{dt.toLocaleString("en-KE")}</span>
           </div>
-          <div className="flex justify-between">
-            <span>Pay:</span>
-            <span className="font-bold">{payLabel[sale.payment]}</span>
+          <div className="rcpt-row">
+            <span>Pay</span>
+            <span>{payLabel[sale.payment]}</span>
           </div>
-        </div>
 
-        <table className="w-full text-[11px]">
-          <thead>
-            <tr className="border-b border-dashed border-black">
-              <th className="text-left font-semibold pb-1">Item</th>
-              <th className="text-right font-semibold pb-1">Qty</th>
-              <th className="text-right font-semibold pb-1">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sale.items.map((it, i) => {
-              const p = productOf(it.productId);
-              // For bar pours the "unit" is the serving name (Tot / Glass).
-              const unitLabel = it.servingName ?? p?.unit ?? "u";
-              return (
-                <tr key={i} className="align-top">
-                  <td className="pt-1">
-                    <div className="font-semibold">
-                      {p?.name ?? "—"}
-                      {it.servingName ? ` (${it.servingName})` : ""}
-                    </div>
-                    <div className="text-[10px]">
-                      @ {ksh(it.unitPrice)}/{unitLabel}
-                    </div>
-                  </td>
-                  <td className="text-right pt-1">
-                    {qty(it.quantity, it.servingName ?? p?.unit ?? "")}
-                  </td>
-                  <td className="text-right pt-1 font-semibold">
-                    {ksh(it.amount)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+          <hr className="rcpt-hr" />
 
-        <div className="border-t border-dashed border-black mt-2 pt-2 text-[12px]">
-          <div className="flex justify-between font-bold text-[14px]">
+          {/* Items */}
+          <div className="rcpt-cols">
+            <span>ITEM</span>
+            <span>AMOUNT</span>
+          </div>
+          {sale.items.map((it, i) => {
+            const p = productOf(it.productId);
+            const unitLabel = it.servingName ?? p?.unit ?? "u";
+            return (
+              <div key={i} className="rcpt-line">
+                <div className="rcpt-line-main">
+                  <span className="rcpt-line-name">
+                    {p?.name ?? "—"}
+                    {it.servingName ? ` (${it.servingName})` : ""}
+                  </span>
+                  <span className="rcpt-line-amt">{num(it.amount)}</span>
+                </div>
+                <div className="rcpt-line-sub">
+                  {qty(it.quantity, it.servingName ?? p?.unit ?? "")} × {num(it.unitPrice)}
+                  {" / "}
+                  {unitLabel}
+                </div>
+              </div>
+            );
+          })}
+
+          <hr className="rcpt-hr" />
+
+          {/* Totals */}
+          <div className="rcpt-total">
             <span>TOTAL</span>
             <span>{ksh(sale.subtotal)}</span>
           </div>
+
           {sale.payment === "cash" && sale.cashGiven != null && (
             <>
-              <div className="flex justify-between">
-                <span>Cash given</span>
+              <div className="rcpt-row">
+                <span>Cash</span>
                 <span>{ksh(sale.cashGiven)}</span>
               </div>
-              <div className="flex justify-between font-bold">
+              <div className="rcpt-row strong">
                 <span>Change</span>
                 <span>{ksh(sale.change ?? 0)}</span>
               </div>
             </>
           )}
           {sale.payment === "mpesa" && sale.mpesaRef && (
-            <div className="flex justify-between">
-              <span>M-Pesa ref</span>
-              <span className="font-bold">{sale.mpesaRef}</span>
+            <div className="rcpt-row">
+              <span>M-Pesa Ref</span>
+              <span>{sale.mpesaRef}</span>
             </div>
           )}
           {sale.payment === "split" &&
             (sale.payments ?? []).map((p, i) => (
-              <div key={i} className="flex justify-between">
-                <span>{p.method === "cash" ? "Cash" : "M-Pesa"}{p.ref ? ` (${p.ref})` : ""}</span>
-                <span className="font-bold">{ksh(p.amount)}</span>
+              <div key={i} className="rcpt-row">
+                <span>
+                  {p.method === "cash" ? "Cash" : "M-Pesa"}
+                  {p.ref ? ` (${p.ref})` : ""}
+                </span>
+                <span>{ksh(p.amount)}</span>
               </div>
             ))}
           {sale.payment === "credit" && (
             <>
-              <div className="flex justify-between">
+              <div className="rcpt-row">
                 <span>Customer</span>
-                <span className="font-bold">{sale.customerName}</span>
+                <span>{sale.customerName}</span>
               </div>
               {sale.customerPhone && (
-                <div className="flex justify-between">
+                <div className="rcpt-row">
                   <span>Phone</span>
                   <span>{sale.customerPhone}</span>
                 </div>
               )}
-              <p className="text-center mt-1 font-bold">** UNPAID — CREDIT **</p>
+              <p className="rcpt-note">** UNPAID — CREDIT **</p>
             </>
           )}
-        </div>
 
-        {(mpesaPaybill || mpesaTill) && (
-          <div className="mt-2 pt-2 border-t border-dashed border-black text-[10px]">
-            <p className="text-center font-bold">PAY VIA M-PESA</p>
-            {mpesaPaybill && (
-              <div className="flex justify-between">
-                <span>Paybill</span>
-                <span className="font-bold">{mpesaPaybill}</span>
-              </div>
-            )}
-            {mpesaTill && (
-              <div className="flex justify-between">
-                <span>Buy Goods (Till)</span>
-                <span className="font-bold">{mpesaTill}</span>
-              </div>
-            )}
-          </div>
-        )}
+          {(mpesaPaybill || mpesaTill) && (
+            <>
+              <hr className="rcpt-hr" />
+              <p className="rcpt-note">PAY VIA M-PESA</p>
+              {mpesaPaybill && (
+                <>
+                  <div className="rcpt-row">
+                    <span>Paybill</span>
+                    <span>{mpesaPaybill}</span>
+                  </div>
+                  {mpesaPaybillAccount && (
+                    <div className="rcpt-row">
+                      <span>Account</span>
+                      <span>{mpesaPaybillAccount}</span>
+                    </div>
+                  )}
+                </>
+              )}
+              {mpesaTill && (
+                <div className="rcpt-row">
+                  <span>Buy Goods (Till)</span>
+                  <span>{mpesaTill}</span>
+                </div>
+              )}
+            </>
+          )}
 
-        <div className="text-center mt-3 text-[10px] border-t border-dashed border-black pt-2">
-          <p>Thank you — Karibu tena!</p>
+          <hr className="rcpt-hr" />
+          <p className="rcpt-foot">Thank you — Karibu tena!</p>
         </div>
-      </div>
+      </>
     );
   },
 );

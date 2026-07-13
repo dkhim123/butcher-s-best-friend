@@ -1,4 +1,6 @@
-import { Hotel, LogOut, User, UtensilsCrossed, Wine } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Hotel, LogOut, Moon, Sun, User, UtensilsCrossed, Wine } from "lucide-react";
+import { useTheme } from "next-themes";
 import { ksh } from "@/lib/format";
 import { useSales } from "@/lib/butchery-store";
 import { todayISO, Department, DEPARTMENT_SHORT_LABELS } from "@/lib/butchery-types";
@@ -74,6 +76,31 @@ function DepartmentSwitcher() {
   );
 }
 
+/**
+ * ThemeToggle — flips between light and night mode. Uses next-themes, which
+ * persists the choice and toggles the `.dark` class the palette hangs off.
+ * We wait for mount so the icon matches the resolved theme (no flash).
+ */
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  const isDark = resolvedTheme === "dark";
+  return (
+    <Button
+      variant="outline"
+      size="icon"
+      className="rounded-full h-9 w-9"
+      onClick={() => setTheme(isDark ? "light" : "dark")}
+      title={isDark ? "Switch to light mode" : "Switch to night mode"}
+      aria-label="Toggle night mode"
+    >
+      {mounted && isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+    </Button>
+  );
+}
+
 export const Header = () => {
   const { sales } = useSales(todayISO());
   const { profile, org, branch, signOut } = useAuth();
@@ -136,6 +163,18 @@ export const Header = () => {
                 {ksh(credit)} on credit
               </p>
             )}
+          </div>
+
+          <ThemeToggle />
+
+          {/* Who's signed in — name + role, visible at a glance (no click). */}
+          <div className="text-right hidden lg:block max-w-[160px]">
+            <p className="text-sm font-semibold leading-tight truncate">
+              {profile?.full_name ?? "User"}
+            </p>
+            <p className="text-[11px] text-muted-foreground leading-tight">
+              {ROLE_LABEL[profile?.role ?? ""] ?? profile?.role}
+            </p>
           </div>
 
           <DropdownMenu>

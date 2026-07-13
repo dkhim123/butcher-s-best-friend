@@ -31,8 +31,14 @@ export const PurchaseOrders = () => {
   const { orders, add, remove } = usePurchaseOrders();
   const [date, setDate] = useState<string>(todayISO());
 
+  // Only stock-tracked products can be delivered — a supplier brings ingredients
+  // (Restaurant) or bottles/crates (Bar), never made-to-order meals. Meals are
+  // untracked (trackStock=false), so this cleanly keeps plates out of the list.
   const deptProducts = useMemo(
-    () => products.filter((p) => p.department === activeDepartment),
+    () =>
+      products.filter(
+        (p) => p.department === activeDepartment && p.trackStock,
+      ),
     [products, activeDepartment],
   );
   const productById = (id: string) => products.find((p) => p.id === id);
@@ -139,11 +145,17 @@ export const PurchaseOrders = () => {
                   <SelectValue placeholder="Select product" />
                 </SelectTrigger>
                 <SelectContent>
-                  {deptProducts.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name} <span className="text-muted-foreground">({p.unit})</span>
-                    </SelectItem>
-                  ))}
+                  {deptProducts.length === 0 ? (
+                    <div className="px-2 py-3 text-xs text-muted-foreground">
+                      No stocked items yet. Add ingredients in Inventory → Products.
+                    </div>
+                  ) : (
+                    deptProducts.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name} <span className="text-muted-foreground">({p.unit})</span>
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
             </div>

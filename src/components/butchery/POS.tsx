@@ -44,6 +44,7 @@ import {
   SaleItem,
   SalePayment,
   SalePaymentKind,
+  isIngredient,
 } from "@/lib/butchery-types";
 import {
   Dialog,
@@ -226,6 +227,11 @@ export const POS = () => {
   const removeLine = (key: string) =>
     setCart((c) => c.filter((l) => l.key !== key));
 
+  const clearCart = () => {
+    setCart([]);
+    setActiveKgLineId(null);
+  };
+
   // ── Scale → active kg line ──────────────────────────────────
   // When a kg product is in the cart AND the scale streams a weight,
   // write it into that line. The cashier can still type over it.
@@ -249,13 +255,24 @@ export const POS = () => {
     }, 0);
   }, [cart, products]);
 
+  // Total number of physical units across the cart (e.g. 3 plates + 2 kg = 5).
+  // Shown next to the running total so the cashier can sanity-check the sale.
+  const cartUnitCount = useMemo(
+    () => cart.reduce((n, l) => n + l.quantity, 0),
+    [cart],
+  );
+
   const change = Math.max((Number(cashGiven) || 0) - cartTotal, 0);
 
   // The till only shows the active department's products. A Bar cashier can
   // never ring up a Restaurant plate, and vice-versa — this is the core of the
   // "your login is your department" model.
   const filteredProducts = useMemo(() => {
-    const inDept = products.filter((p) => p.department === activeDepartment);
+    // Raw ingredients (flour, oil…) are consumed in the kitchen, never sold at
+    // the till — keep them out of the product grid so a cashier can't ring one up.
+    const inDept = products.filter(
+      (p) => p.department === activeDepartment && !isIngredient(p),
+    );
     const term = search.trim().toLowerCase();
     if (!term) return inDept;
     return inDept.filter((p) => p.name.toLowerCase().includes(term));
@@ -393,7 +410,7 @@ export const POS = () => {
           />
         </div>
       )}
-      <div className="grid lg:grid-cols-[1fr_420px] gap-6">
+      <div className="grid lg:grid-cols-[1fr_460px] gap-6">
         {/* LEFT — product grid */}
         <div className="space-y-4">
           <Card className="p-3 shadow-soft">
@@ -465,15 +482,26 @@ export const POS = () => {
             product grid. Uses the full viewport height minus the header
             so MANY cart rows are visible at once — receipt-style. */}
         <Card className="p-4 shadow-elevated lg:sticky lg:top-24 lg:self-start flex flex-col h-[calc(100vh-7rem)] min-h-[480px] overflow-hidden">
-          <h3 className="font-semibold mb-3 flex items-center gap-2 shrink-0">
+          <div className="mb-3 flex items-center gap-2 shrink-0">
             <ShoppingCart className="h-5 w-5 text-primary" />
-            Cart
+            <h3 className="font-semibold">Cart</h3>
             {cart.length > 0 && (
-              <Badge variant="secondary" className="ml-auto">
-                {cart.length} item{cart.length === 1 ? "" : "s"}
-              </Badge>
+              <>
+                <Badge variant="secondary" className="ml-auto">
+                  {cart.length} item{cart.length === 1 ? "" : "s"}
+                </Badge>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+                  onClick={clearCart}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1" />
+                  Clear
+                </Button>
+              </>
             )}
-          </h3>
+          </div>
 
           {cart.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center py-10 text-center min-h-0">
@@ -512,10 +540,17 @@ export const POS = () => {
               </div>
 
               {/* Pinned footer: always visible, does not cover cart items */}
-              <div className="shrink-0 border-t mt-2 pt-3 bg-card space-y-3 shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
+              <div className="shrink-0 border-t mt-2 pt-2 bg-card space-y-2 shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold">Total</span>
-                  <span className="text-2xl font-bold text-primary tabular-nums">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-sm font-semibold">Total</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {cart.length} item{cart.length === 1 ? "" : "s"} ·{" "}
+                      {Number(cartUnitCount.toFixed(3))} unit
+                      {cartUnitCount === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <span className="text-2xl font-bold text-primary tabular-nums leading-none">
                     {ksh(cartTotal)}
                   </span>
                 </div>
@@ -546,7 +581,7 @@ export const POS = () => {
                 <Button
                   onClick={handleCheckout}
                   disabled={selling || (requiresShift && !shift)}
-                  className="w-full bg-gradient-primary h-12 text-base font-semibold"
+                  className="w-full bg-gradient-primary h-11 text-base font-semibold"
                 >
                   {requiresShift && !shift
                     ? "Open a shift to sell"
@@ -598,6 +633,7 @@ export const POS = () => {
         tagline={org?.tagline}
         phone={org?.phone}
         mpesaPaybill={org?.mpesa_paybill}
+        mpesaPaybillAccount={org?.mpesa_paybill_account}
         mpesaTill={org?.mpesa_till}
       />
     </>
@@ -802,7 +838,7 @@ function CartLineRow({
 
   return (
     <div
-      className={`rounded-lg border px-2.5 py-2 ${
+      className={`rounded-lg border px-2.5 py-1.5 transition-colors ${
         overSell ? "border-destructive/50 bg-destructive/5" : "bg-background"
       }`}
     >
@@ -821,16 +857,16 @@ function CartLineRow({
           </Badge>
         )}
         <p className="font-semibold text-sm flex-1 truncate">{product.name}</p>
-        <span className="font-bold text-primary text-sm tabular-nums whitespace-nowrap">
+        <span className="font-bold text-primary text-base tabular-nums whitespace-nowrap">
           {ksh(subtotal)}
         </span>
         <Button
           size="icon"
           variant="ghost"
-          className="h-6 w-6 -mr-1 shrink-0"
+          className="h-7 w-7 -mr-1.5 shrink-0"
           onClick={onRemove}
         >
-          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+          <Trash2 className="h-4 w-4 text-destructive" />
         </Button>
       </div>
 
@@ -839,11 +875,11 @@ function CartLineRow({
         <Button
           size="icon"
           variant="outline"
-          className="h-7 w-7 shrink-0"
+          className="h-8 w-8 shrink-0"
           onClick={() => onIncrement(-step)}
           aria-label="Decrease"
         >
-          <Minus className="h-3.5 w-3.5" />
+          <Minus className="h-4 w-4" />
         </Button>
         <Input
           type="number"
@@ -852,16 +888,16 @@ function CartLineRow({
           step={step}
           min={0}
           onChange={(e) => onSetQty(Number(e.target.value) || 0)}
-          className="h-7 w-14 text-center font-semibold tabular-nums px-1 no-spinner"
+          className="h-8 w-16 text-center text-sm font-semibold tabular-nums px-1 no-spinner"
         />
         <Button
           size="icon"
           variant="outline"
-          className="h-7 w-7 shrink-0"
+          className="h-8 w-8 shrink-0"
           onClick={() => onIncrement(step)}
           aria-label="Increase"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-4 w-4" />
         </Button>
         <span className="text-muted-foreground">{unitLabel}</span>
         <span className="text-muted-foreground">×</span>
@@ -1014,14 +1050,14 @@ function PaymentSection(props: {
   } = props;
 
   return (
-    <div className={compact ? "space-y-3" : "space-y-3 border-t pt-4"}>
+    <div className={compact ? "space-y-2" : "space-y-3 border-t pt-4"}>
       {!compact && (
         <div className="flex items-center justify-between">
           <span className="text-sm font-semibold">Total</span>
           <span className="text-2xl font-bold text-primary">{ksh(total)}</span>
         </div>
       )}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-4 gap-1.5">
         {(
           [
             { key: "cash", label: "Cash", icon: Banknote },
@@ -1034,7 +1070,7 @@ function PaymentSection(props: {
             key={key}
             type="button"
             onClick={() => setPayment(key)}
-            className={`rounded-lg border p-2.5 flex flex-col items-center gap-1 text-xs font-medium transition-all ${
+            className={`rounded-lg border py-1.5 flex flex-col items-center gap-0.5 text-[11px] font-medium transition-all ${
               payment === key
                 ? "border-primary bg-primary text-primary-foreground shadow-soft"
                 : "border-border hover:border-primary/50 hover:bg-muted"
@@ -1047,22 +1083,22 @@ function PaymentSection(props: {
       </div>
 
       {payment === "cash" && (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <Label className="text-xs">Cash given</Label>
+            <div className="space-y-0.5">
+              <Label className="text-[11px]">Cash given</Label>
               <Input
                 type="number"
                 inputMode="decimal"
                 placeholder={String(Math.round(total))}
                 value={cashGiven}
                 onChange={(e) => setCashGiven(e.target.value)}
-                className="no-spinner"
+                className="h-9 no-spinner"
               />
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Change</Label>
-              <div className="h-10 px-3 rounded-md border bg-muted flex items-center font-bold text-primary tabular-nums">
+            <div className="space-y-0.5">
+              <Label className="text-[11px]">Change</Label>
+              <div className="h-9 px-3 rounded-md border bg-muted flex items-center font-bold text-primary tabular-nums">
                 {ksh(change)}
               </div>
             </div>
@@ -1071,7 +1107,7 @@ function PaymentSection(props: {
           <Button
             type="button"
             variant={cashGiven !== "" && Number(cashGiven) === total ? "default" : "outline"}
-            className="w-full h-9 text-sm font-semibold"
+            className="w-full h-8 text-sm font-semibold"
             onClick={() =>
               setCashGiven(
                 total % 1 === 0 ? String(Math.round(total)) : total.toFixed(2),

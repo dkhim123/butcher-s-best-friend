@@ -10,16 +10,18 @@ import {
   AlertCircle,
   Beef,
   PieChart,
+  ChefHat,
 } from "lucide-react";
 import {
   useDailyStockReport,
+  useKitchenUsage,
   useProducts,
   usePurchaseOrders,
   useSales,
   useSalesByCategory,
   useTopFoodGroups,
 } from "@/lib/butchery-store";
-import { DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, paidVia, todayISO } from "@/lib/butchery-types";
+import { DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, isIngredient, paidVia, Product, todayISO } from "@/lib/butchery-types";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { ksh, qty } from "@/lib/format";
 
@@ -42,9 +44,15 @@ export const DailyReport = () => {
   );
   // A sale belongs to a department if any of its line items is a product from
   // that department (sales are rung on a department-scoped till, so all items
-  // in one sale share a department).
+  // in one sale share a department). Cancelled sales are dropped entirely —
+  // their stock was returned and their money never counts.
   const sales = useMemo(
-    () => allDaySales.filter((s) => s.items.some((i) => deptProductIds.has(i.productId))),
+    () =>
+      allDaySales.filter(
+        (s) =>
+          s.cancelState !== "cancelled" &&
+          s.items.some((i) => deptProductIds.has(i.productId)),
+      ),
     [allDaySales, deptProductIds],
   );
   // This department's deliveries recorded on this date (multi-line POs).
@@ -90,6 +98,13 @@ export const DailyReport = () => {
       // Show real plate counts only for Sold; everything else
       // renders as an em-dash so the cashier doesn't get a
       // misleading "0 plate" line.
+      // Cost of goods sold + profit, only where a buying price is known.
+      // `soldFromSales` is already in the same unit as `costPrice` (bottles
+      // for pours, plates for meals, whole units otherwise), so this one
+      // formula is correct for every product kind.
+      const cogs = p.costPrice != null ? soldFromSales * p.costPrice : null;
+      const profit = cogs != null ? revenue - cogs : null;
+
       if (!p.trackStock) {
         return {
           product: p,
@@ -98,6 +113,8 @@ export const DailyReport = () => {
           sold: soldFromSales,
           remaining: null as number | null,
           revenue,
+          cogs,
+          profit,
           transactions: items.length,
         };
       }
@@ -126,6 +143,8 @@ export const DailyReport = () => {
         sold: soldFromSales,
         remaining: remaining as number | null,
         revenue,
+        cogs,
+        profit,
         transactions: items.length,
       };
     });
@@ -151,6 +170,52 @@ export const DailyReport = () => {
     .filter((s) => !s.paid)
     .reduce((a, s) => a + deptPaidVia(s, "credit"), 0);
   const purchaseSpend = deptOrders.reduce((a, o) => a + o.totalCost, 0);
+
+  // Profit only counts products whose buying price is known, so we don't
+  // pretend an unknown-cost item is 100% margin. We surface how many items
+  // are missing a cost so the owner knows to fill them in.
+  const costKnownRows = rows.filter((r) => r.profit != null && r.revenue > 0);
+  const revenueWithCost = costKnownRows.reduce((a, r) => a + r.revenue, 0);
+  const totalCogs = costKnownRows.reduce((a, r) => a + (r.cogs ?? 0), 0);
+  const grossProfit = costKnownRows.reduce((a, r) => a + (r.profit ?? 0), 0);
+  const marginPct = revenueWithCost > 0 ? (grossProfit / revenueWithCost) * 100 : 0;
+  const missingCostCount = rows.filter((r) => r.revenue > 0 && r.profit == null).length;
+
+  // ── Food cost (kitchen usage vs food sales) ───────────────────────────────
+  // The classic restaurant health check. The chef logs how much of each
+  // ingredient was used today (Kitchen tab); we cost that usage (used × buying
+  // price) and compare it against the day's food sales. A rising food-cost %
+  // is the early signal for over-portioning, waste, or theft.
+  const { rows: usageRows } = useKitchenUsage(date);
+  const ingredients = useMemo(() => products.filter(isIngredient), [products]);
+
+  const usageLines = useMemo(() => {
+    return usageRows
+      .map((u) => {
+        const p = allProducts.find((x) => x.id === u.productId);
+        if (!p || !isIngredient(p) || p.department !== activeDepartment) return null;
+        const cost = p.costPrice != null ? u.qtyUsed * p.costPrice : null;
+        return { product: p, qtyUsed: u.qtyUsed, cost };
+      })
+      .filter((l): l is { product: Product; qtyUsed: number; cost: number | null } => l !== null)
+      .sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0));
+  }, [usageRows, allProducts, activeDepartment]);
+
+  const ingredientCost = usageLines.reduce((a, l) => a + (l.cost ?? 0), 0);
+  const usageMissingCost = usageLines.filter((l) => l.cost == null).length;
+  // Food sales = this department's sold revenue (ingredients are never sold, so
+  // for the Restaurant this is exactly meals + sides).
+  const foodSales = totalRevenue;
+  const foodCostPct = foodSales > 0 ? (ingredientCost / foodSales) * 100 : null;
+  // Standard kitchen benchmarks: ≤35% healthy, 36–45% keep an eye, >45% high.
+  const foodCostHealth =
+    foodCostPct == null
+      ? null
+      : foodCostPct <= 35
+        ? { label: "Healthy", cls: "text-success", bar: "bg-success" }
+        : foodCostPct <= 45
+          ? { label: "Watch", cls: "text-amber-600", bar: "bg-amber-500" }
+          : { label: "High", cls: "text-destructive", bar: "bg-destructive" };
 
   return (
     <div className="space-y-6">
@@ -209,6 +274,179 @@ export const DailyReport = () => {
           )}
         </Card>
       </div>
+
+      {/* Profitability — revenue minus cost of goods sold, for products that
+          have a buying price recorded. */}
+      <Card className="overflow-hidden shadow-soft">
+        <div className="p-4 border-b bg-gradient-surface flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-primary" />
+          <div>
+            <h3 className="font-semibold">Profit today</h3>
+            <p className="text-xs text-muted-foreground">
+              Selling price − buying price, on items with a cost recorded
+            </p>
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x">
+          <div className="p-4">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Sales (costed items)
+            </p>
+            <p className="text-xl font-bold">{ksh(revenueWithCost)}</p>
+          </div>
+          <div className="p-4">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Cost of goods
+            </p>
+            <p className="text-xl font-bold text-destructive">{ksh(totalCogs)}</p>
+          </div>
+          <div className="p-4">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Gross profit
+            </p>
+            <p className={`text-xl font-bold ${grossProfit >= 0 ? "text-success" : "text-destructive"}`}>
+              {ksh(grossProfit)}
+            </p>
+          </div>
+          <div className="p-4">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Margin
+            </p>
+            <p className="text-xl font-bold">{marginPct.toFixed(1)}%</p>
+          </div>
+        </div>
+        {missingCostCount > 0 && (
+          <div className="px-4 pb-3 -mt-1">
+            <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+              {missingCostCount} sold item{missingCostCount === 1 ? "" : "s"} have no buying
+              price yet — add one in Inventory → Products to include them in profit.
+            </p>
+          </div>
+        )}
+      </Card>
+
+      {/* Food cost — kitchen ingredient usage vs food sales. Only shown for
+          departments that actually stock ingredients (the Restaurant). */}
+      {ingredients.length > 0 && (
+        <Card className="overflow-hidden shadow-soft">
+          <div className="p-4 border-b bg-gradient-surface flex items-center gap-2">
+            <ChefHat className="h-4 w-4 text-primary" />
+            <div>
+              <h3 className="font-semibold">Food cost today</h3>
+              <p className="text-xs text-muted-foreground">
+                Ingredients used (from the Kitchen tab) vs food sales
+              </p>
+            </div>
+          </div>
+
+          <div className="grid sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x">
+            <div className="p-4">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Ingredients used (cost)
+              </p>
+              <p className="text-xl font-bold text-destructive">{ksh(ingredientCost)}</p>
+            </div>
+            <div className="p-4">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Food sales
+              </p>
+              <p className="text-xl font-bold">{ksh(foodSales)}</p>
+            </div>
+            <div className="p-4">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Food cost %
+              </p>
+              {foodCostPct == null ? (
+                <p className="text-xl font-bold text-muted-foreground">—</p>
+              ) : (
+                <p className={`text-xl font-bold ${foodCostHealth?.cls}`}>
+                  {foodCostPct.toFixed(0)}%
+                  <span className="ml-2 text-xs font-semibold align-middle">
+                    {foodCostHealth?.label}
+                  </span>
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Proportion bar — how much of each shilling of food sales was eaten
+              up by ingredient cost. */}
+          {foodCostPct != null && (
+            <div className="px-4 pb-3">
+              <div className="h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className={`h-full transition-all ${foodCostHealth?.bar}`}
+                  style={{ width: `${Math.min(foodCostPct, 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Per-ingredient breakdown of what drove the cost. */}
+          {usageLines.length === 0 ? (
+            <p className="px-4 pb-4 text-sm text-muted-foreground">
+              No ingredient usage logged for this date. The chef records it in
+              Inventory → Kitchen.
+            </p>
+          ) : (
+            <div className="overflow-x-auto border-t">
+              <table className="w-full text-sm">
+                <thead className="bg-secondary/60 text-secondary-foreground">
+                  <tr>
+                    <th className="text-left p-3 font-semibold">Ingredient</th>
+                    <th className="text-right p-3 font-semibold">Used</th>
+                    <th className="text-right p-3 font-semibold">Buying price</th>
+                    <th className="text-right p-3 font-semibold">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usageLines.map((l) => (
+                    <tr key={l.product.id} className="border-t hover:bg-muted/40">
+                      <td className="p-3 font-medium">{l.product.name}</td>
+                      <td className="p-3 text-right tabular-nums">
+                        {qty(l.qtyUsed, l.product.unit)}
+                      </td>
+                      <td className="p-3 text-right tabular-nums text-muted-foreground">
+                        {l.product.costPrice != null
+                          ? `${ksh(l.product.costPrice)} / ${l.product.unit}`
+                          : "—"}
+                      </td>
+                      <td className="p-3 text-right tabular-nums font-semibold">
+                        {l.cost != null ? (
+                          ksh(l.cost)
+                        ) : (
+                          <span className="text-amber-600 text-xs">no cost set</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 bg-gradient-surface font-bold">
+                    <td className="p-3" colSpan={3}>
+                      Total ingredient cost
+                    </td>
+                    <td className="p-3 text-right tabular-nums text-destructive">
+                      {ksh(ingredientCost)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          {usageMissingCost > 0 && (
+            <div className="px-4 pb-3">
+              <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+                {usageMissingCost} used ingredient{usageMissingCost === 1 ? "" : "s"} have no
+                buying price yet — add one in Inventory → Products for an accurate food cost.
+              </p>
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Two new senior-dev widgets: "by category" + "by food group" */}
       <div className="grid lg:grid-cols-2 gap-4">
@@ -328,6 +566,7 @@ export const DailyReport = () => {
                 <th className="text-right p-3 font-semibold">− Sold</th>
                 <th className="text-right p-3 font-semibold">Remaining</th>
                 <th className="text-right p-3 font-semibold">Revenue</th>
+                <th className="text-right p-3 font-semibold">Profit</th>
               </tr>
             </thead>
             <tbody>
@@ -389,6 +628,15 @@ export const DailyReport = () => {
                     <td className="p-3 text-right tabular-nums font-bold text-primary">
                       {ksh(r.revenue)}
                     </td>
+                    <td className="p-3 text-right tabular-nums font-semibold">
+                      {r.profit === null ? (
+                        dash
+                      ) : (
+                        <span className={r.profit >= 0 ? "text-success" : "text-destructive"}>
+                          {ksh(r.profit)}
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -405,6 +653,11 @@ export const DailyReport = () => {
                 </td>
                 <td className="p-3 text-right tabular-nums text-primary">
                   {ksh(totalRevenue)}
+                </td>
+                <td className="p-3 text-right tabular-nums">
+                  <span className={grossProfit >= 0 ? "text-success" : "text-destructive"}>
+                    {ksh(grossProfit)}
+                  </span>
                 </td>
               </tr>
             </tfoot>

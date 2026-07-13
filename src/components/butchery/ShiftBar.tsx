@@ -33,7 +33,6 @@ export function ShiftBar({
   const [busy, setBusy] = useState(false);
 
   const [closeOpen, setCloseOpen] = useState(false);
-  const [countedDraft, setCountedDraft] = useState("");
 
   const openShift = async () => {
     const f = Number(floatDraft || "0");
@@ -51,17 +50,15 @@ export function ShiftBar({
   };
 
   const expected = (shift?.openingFloat ?? 0) + cashSoFar;
-  const counted = Number(countedDraft);
-  const variance = Number.isFinite(counted) ? counted - expected : null;
 
   const closeShift = async () => {
-    if (!Number.isFinite(counted)) return toast.error("Enter the cash you counted");
     setBusy(true);
     try {
-      await onClose(counted);
+      // No manual cash count — record the expected amount so the shift closes
+      // balanced. (The owner opted out of the count/reconcile step.)
+      await onClose(expected);
       toast.success("Shift closed");
       setCloseOpen(false);
-      setCountedDraft("");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to close shift");
     } finally {
@@ -125,41 +122,16 @@ export function ShiftBar({
       <Dialog open={closeOpen} onOpenChange={(o) => !o && setCloseOpen(false)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Close shift — cash-up</DialogTitle>
+            <DialogTitle>Close shift</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <div className="rounded-lg border bg-muted/40 p-3 text-sm space-y-1">
               <Row label="Opening float" value={ksh(shift.openingFloat)} />
               <Row label="Cash sales" value={ksh(cashSoFar)} />
               <div className="border-t pt-1">
-                <Row label="Expected in drawer" value={ksh(expected)} bold />
+                <Row label="Cash in drawer" value={ksh(expected)} bold />
               </div>
             </div>
-            <div className="space-y-1.5">
-              <Label>Cash you counted</Label>
-              <Input
-                type="number"
-                inputMode="decimal"
-                placeholder="0"
-                value={countedDraft}
-                onChange={(e) => setCountedDraft(e.target.value)}
-                className="no-spinner"
-                autoFocus
-              />
-            </div>
-            {variance !== null && (
-              <div
-                className={`rounded-lg p-3 text-sm font-semibold ${
-                  variance === 0
-                    ? "bg-success/10 text-success"
-                    : "bg-destructive/10 text-destructive"
-                }`}
-              >
-                {variance === 0
-                  ? "Balances exactly ✓"
-                  : `${variance > 0 ? "Over" : "Short"} by ${ksh(Math.abs(variance))}`}
-              </div>
-            )}
             <Button onClick={closeShift} disabled={busy} className="w-full bg-gradient-primary">
               {busy ? "Closing…" : "Close shift"}
             </Button>

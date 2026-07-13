@@ -40,6 +40,7 @@ export interface Database {
           phone: string | null;
           address: string | null;
           mpesa_paybill: string | null;
+          mpesa_paybill_account: string | null;
           mpesa_till: string | null;
           active: boolean;
           created_at: string;
@@ -52,6 +53,7 @@ export interface Database {
           phone?: string | null;
           address?: string | null;
           mpesa_paybill?: string | null;
+          mpesa_paybill_account?: string | null;
           mpesa_till?: string | null;
           active?: boolean;
           created_at?: string;
@@ -64,6 +66,7 @@ export interface Database {
           phone?: string | null;
           address?: string | null;
           mpesa_paybill?: string | null;
+          mpesa_paybill_account?: string | null;
           mpesa_till?: string | null;
           active?: boolean;
           created_at?: string;
@@ -137,6 +140,7 @@ export interface Database {
           department: Department;
           track_stock: boolean;
           container_ml: number | null;
+          cost_price: number | null;
           created_at: string;
         };
         Insert: {
@@ -151,6 +155,7 @@ export interface Database {
           department?: Department;
           track_stock?: boolean;
           container_ml?: number | null;
+          cost_price?: number | null;
           created_at?: string;
         };
         Update: {
@@ -165,6 +170,7 @@ export interface Database {
           department?: Department;
           track_stock?: boolean;
           container_ml?: number | null;
+          cost_price?: number | null;
           created_at?: string;
         };
       };
@@ -464,6 +470,11 @@ export interface Database {
           paid: boolean;
           created_by: string | null;
           shift_id: string | null;
+          cancel_state: "none" | "requested" | "cancelled" | "rejected";
+          cancel_reason: string | null;
+          cancel_by: string | null;
+          cancel_approved_by: string | null;
+          cancelled_at: string | null;
           created_at: string;
         };
         Insert: {
@@ -641,6 +652,7 @@ export interface Database {
           p_address?: string | null;
           p_mpesa_paybill?: string | null;
           p_mpesa_till?: string | null;
+          p_mpesa_paybill_account?: string | null;
         };
         Returns: {
           org: Database["public"]["Tables"]["organisations"]["Row"];
@@ -653,6 +665,18 @@ export interface Database {
       };
       reset_staff_password: {
         Args: { p_actor_id: string; p_email: string; p_password: string };
+        Returns: null;
+      };
+      request_cancel: {
+        Args: { p_actor_id: string; p_sale_id: string; p_reason?: string | null };
+        Returns: null;
+      };
+      approve_cancel: {
+        Args: { p_actor_id: string; p_sale_id: string };
+        Returns: null;
+      };
+      reject_cancel: {
+        Args: { p_actor_id: string; p_sale_id: string };
         Returns: null;
       };
       finalize_stock_take: {

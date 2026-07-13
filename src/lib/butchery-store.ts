@@ -33,9 +33,9 @@ import {
 // (owners watch these screens all day on metered mobile data) and avoids
 // pulling wide/derived columns we don't render.
 const PRODUCT_COLS =
-  "id, name, type, price, unit, category, food_group, department, track_stock, container_ml, created_at";
+  "id, name, type, price, unit, category, food_group, department, track_stock, container_ml, cost_price, created_at";
 const SALE_COLS =
-  "id, receipt_no, date, payment, payments, subtotal, cash_given, change_amount, mpesa_ref, customer_name, customer_phone, customer_id, paid, created_by, shift_id, created_at";
+  "id, receipt_no, date, payment, payments, subtotal, cash_given, change_amount, mpesa_ref, customer_name, customer_phone, customer_id, paid, created_by, shift_id, cancel_state, cancel_reason, created_at";
 const SALE_ITEM_COLS = "product_id, quantity, unit_price, amount, serving_name, serving_ml";
 
 // Reads the active session from localStorage. Keep this in sync with
@@ -87,6 +87,7 @@ function mapProduct(row: Record<string, unknown>): Product {
     department: (row.department as Department | undefined) ?? "restaurant",
     trackStock: Boolean(row.track_stock),
     containerMl: row.container_ml != null ? Number(row.container_ml) : null,
+    costPrice: row.cost_price != null ? Number(row.cost_price) : null,
   };
 }
 
@@ -144,6 +145,9 @@ function mapSale(row: Record<string, unknown>): Sale {
     customerId: (row.customer_id as string | null) ?? null,
     paid: Boolean(row.paid),
     shiftId: (row.shift_id as string | null) ?? null,
+    createdBy: (row.created_by as string | null) ?? null,
+    cancelState: (row.cancel_state as Sale["cancelState"]) ?? "none",
+    cancelReason: (row.cancel_reason as string | null) ?? null,
   };
 }
 
@@ -206,6 +210,7 @@ export function useProducts() {
           department: p.department ?? "restaurant",
           track_stock: p.trackStock,
           container_ml: p.containerMl ?? null,
+          cost_price: p.costPrice ?? null,
         })
         .select(PRODUCT_COLS)
         .single();
@@ -256,6 +261,7 @@ export function useProducts() {
           ...(patch.department !== undefined && { department: patch.department }),
           ...(patch.trackStock !== undefined && { track_stock: patch.trackStock }),
           ...(patch.containerMl !== undefined && { container_ml: patch.containerMl }),
+          ...(patch.costPrice !== undefined && { cost_price: patch.costPrice }),
         })
         .eq("id", id)
         .eq("org_id", orgId);
@@ -807,9 +813,44 @@ export function useSales(date?: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["sales", orgId, branchId] }),
   });
 
+  const requestCancelMutation = useMutation({
+    mutationFn: async ({ id, reason }: { id: string; reason?: string }) => {
+      const { error } = await supabase.rpc("request_cancel", {
+        p_actor_id: getProfileId() as string,
+        p_sale_id: id,
+        p_reason: reason ?? null,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sales", orgId, branchId] }),
+  });
+
+  const approveCancelMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.rpc("approve_cancel", {
+        p_actor_id: getProfileId() as string,
+        p_sale_id: id,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sales", orgId, branchId] }),
+  });
+
+  const rejectCancelMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.rpc("reject_cancel", {
+        p_actor_id: getProfileId() as string,
+        p_sale_id: id,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sales", orgId, branchId] }),
+  });
+
+  // Cancelled sales don't count as sold (stock was returned).
   const soldQtyFor = (productId: string, d: string) =>
     allSales
-      .filter((s) => s.date === d)
+      .filter((s) => s.date === d && s.cancelState !== "cancelled")
       .reduce(
         (a, s) =>
           a + s.items.filter((i) => i.productId === productId).reduce((aa, i) => aa + i.quantity, 0),
@@ -823,6 +864,10 @@ export function useSales(date?: string) {
       addMutation.mutateAsync(s),
     update: (id: string, patch: Partial<Sale>) => updateMutation.mutate({ id, patch }),
     remove: (id: string) => removeMutation.mutate(id),
+    requestCancel: (id: string, reason?: string) =>
+      requestCancelMutation.mutateAsync({ id, reason }),
+    approveCancel: (id: string) => approveCancelMutation.mutateAsync(id),
+    rejectCancel: (id: string) => rejectCancelMutation.mutateAsync(id),
     soldQtyFor,
   };
 }
@@ -1239,6 +1284,75 @@ export function useStockOnHand() {
     recordUsageMutation.mutateAsync({ productId, qtyUsed, note });
 
   return { rows, byProductId, addStock, recordUsage };
+}
+
+// ── useKitchenUsage ───────────────────────────────────────────────────────────
+// How much of each ingredient the kitchen used on a given DATE — read straight
+// from the 'usage' movements the chef logs in the Kitchen tab. The Food-cost
+// widget multiplies each ingredient's used qty by its buying price and compares
+// the total against the day's food sales.
+
+export interface KitchenUsageRow {
+  productId: string;
+  qtyUsed: number; // total used that day, in the product's unit (always positive)
+}
+
+export function useKitchenUsage(date: string = todayISO()) {
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const qc = useQueryClient();
+  const chId = useRef(`kitchen_usage-${Math.random().toString(36).slice(2)}`);
+
+  const { data: rows = [], isLoading } = useQuery({
+    queryKey: ["kitchen_usage", orgId, branchId, date],
+    queryFn: async (): Promise<KitchenUsageRow[]> => {
+      if (!orgId || !branchId) return [];
+      // Same local-midnight → UTC window logic as useDailyStockReport.
+      const dayStart = new Date(`${date}T00:00:00`);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+
+      const { data, error } = await supabase
+        .from("stock_movements")
+        .select("product_id, delta_qty")
+        .eq("org_id", orgId)
+        .eq("branch_id", branchId)
+        .eq("reason", "usage")
+        .gte("occurred_at", dayStart.toISOString())
+        .lt("occurred_at", dayEnd.toISOString());
+      if (error) throw error;
+
+      const map = new Map<string, number>();
+      for (const r of data ?? []) {
+        const delta = Number(r.delta_qty);
+        if (!Number.isFinite(delta)) continue;
+        const pid = r.product_id as string;
+        // Usage is stored negative; report it as a positive "used" amount.
+        map.set(pid, (map.get(pid) ?? 0) + Math.abs(delta));
+      }
+      return [...map.entries()].map(([productId, qtyUsed]) => ({ productId, qtyUsed }));
+    },
+    staleTime: 30_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  useEffect(() => {
+    if (!orgId || !branchId) return;
+    const channel = supabase
+      .channel(chId.current)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "stock_movements", filter: `branch_id=eq.${branchId}` },
+        () => qc.invalidateQueries({ queryKey: ["kitchen_usage", orgId, branchId, date] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc, orgId, branchId, date]);
+
+  const byProductId = (pid: string) =>
+    rows.find((r) => r.productId === pid)?.qtyUsed ?? 0;
+
+  return { rows, byProductId, isLoading };
 }
 
 // ── useStockTake ──────────────────────────────────────────────────────────────
