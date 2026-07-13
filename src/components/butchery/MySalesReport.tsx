@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Wallet, ShoppingBag, Receipt as ReceiptIcon, Printer } from "lucide-react";
 import { useProducts, useSales } from "@/lib/butchery-store";
-import { Sale, todayISO } from "@/lib/butchery-types";
+import { Sale, isCancelled, todayISO } from "@/lib/butchery-types";
 import { useAuth } from "@/contexts/AuthContext";
 import { ksh, qty } from "@/lib/format";
 import { ReceiptDialog } from "./ReceiptDialog";
@@ -39,7 +39,7 @@ export const MySalesReport = () => {
       everySale.filter(
         (s) =>
           s.createdBy === profile?.id &&
-          s.cancelState !== "cancelled" &&
+          !isCancelled(s) &&
           s.date >= lo &&
           s.date <= hi,
       ),

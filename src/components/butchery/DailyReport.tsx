@@ -26,7 +26,7 @@ import {
   useSalesByCategory,
   useTopFoodGroups,
 } from "@/lib/butchery-store";
-import { ACTIVE_DEPARTMENTS, DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, isIngredient, paidVia, Product, todayISO } from "@/lib/butchery-types";
+import { ACTIVE_DEPARTMENTS, DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, bottleEquivalent, deptPaidVia, isCancelled, isIngredient, Product, todayISO } from "@/lib/butchery-types";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { ksh, qty } from "@/lib/format";
 
@@ -70,7 +70,7 @@ export const DailyReport = () => {
     () =>
       allDaySales.filter(
         (s) =>
-          s.cancelState !== "cancelled" &&
+          !isCancelled(s) &&
           s.items.some((i) => deptProductIds.has(i.productId)),
       ),
     [allDaySales, deptProductIds],
@@ -109,12 +109,7 @@ export const DailyReport = () => {
       // For bar drinks poured by measure, "sold" is counted in BOTTLES so it
       // matches Opening/Purchased/Remaining (which are in bottles). A tot of a
       // 750ml bottle counts as 30/750 of a bottle. Everything else is whole units.
-      const soldFromSales = items.reduce((a, i) => {
-        if (p.containerMl) {
-          return a + i.quantity * ((i.servingMl ?? p.containerMl) / p.containerMl);
-        }
-        return a + i.quantity;
-      }, 0);
+      const soldFromSales = items.reduce((a, i) => a + bottleEquivalent(i, p), 0);
 
       // Untracked products (meals): no opening stock, no purchases,
       // no end-of-day remaining concept — they are made to order.
@@ -167,25 +162,18 @@ export const DailyReport = () => {
     });
   }, [products, sales, dailyStock]);
 
-  // This department's slice of a sale (line amounts for its products only), so a
-  // mixed Food+Bar bill counts correctly in each department's totals.
-  const deptAmount = (s: (typeof sales)[number]) =>
-    s.items
-      .filter((i) => deptProductIds.has(i.productId))
-      .reduce((a, i) => a + i.amount, 0);
-
-  // This department's share of a sale paid by a given method — apportions a
-  // split payment (part cash / part M-Pesa) by the department's slice.
-  const deptPaidVia = (s: (typeof sales)[number], method: "cash" | "mpesa" | "credit") =>
-    s.subtotal > 0 ? paidVia(s, method) * (deptAmount(s) / s.subtotal) : 0;
+  // Thin bindings over the SHARED sale maths (butchery-types) — identical logic
+  // to the Transactions screen, defined once so the two can never disagree.
+  const deptPaid = (s: (typeof sales)[number], method: "cash" | "mpesa" | "credit") =>
+    deptPaidVia(s, method, deptProductIds);
 
   const totalRevenue = rows.reduce((a, r) => a + r.revenue, 0);
-  const cashTotal = sales.reduce((a, s) => a + deptPaidVia(s, "cash"), 0);
-  const mpesaTotal = sales.reduce((a, s) => a + deptPaidVia(s, "mpesa"), 0);
-  const creditTotal = sales.reduce((a, s) => a + deptPaidVia(s, "credit"), 0);
+  const cashTotal = sales.reduce((a, s) => a + deptPaid(s, "cash"), 0);
+  const mpesaTotal = sales.reduce((a, s) => a + deptPaid(s, "mpesa"), 0);
+  const creditTotal = sales.reduce((a, s) => a + deptPaid(s, "credit"), 0);
   const creditUnpaid = sales
     .filter((s) => !s.paid)
-    .reduce((a, s) => a + deptPaidVia(s, "credit"), 0);
+    .reduce((a, s) => a + deptPaid(s, "credit"), 0);
   const purchaseSpend = deptOrders.reduce((a, o) => a + o.totalCost, 0);
 
   // Profit only counts products whose buying price is known, so we don't
@@ -252,7 +240,7 @@ export const DailyReport = () => {
     const sections = ACTIVE_DEPARTMENTS.map((dept) => {
       const map = new Map<string, { name: string; qty: number; amount: number }>();
       for (const s of allDaySales) {
-        if (s.cancelState === "cancelled") continue;
+        if (isCancelled(s)) continue;
         for (const it of s.items) {
           const p = allProducts.find((x) => x.id === it.productId);
           if (!p || p.department !== dept) continue;

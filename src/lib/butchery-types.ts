@@ -202,6 +202,54 @@ export function paidVia(
   return sale.payment === method ? sale.subtotal : 0;
 }
 
+// ── Shared sale maths ──────────────────────────────────────────────────────────
+// These are the SINGLE source of truth for numbers that every screen (Report,
+// Transactions, My Sales, Header) needs. Defining them once means two modules
+// can never drift apart — change the rule here and every screen updates together.
+
+/** A cancelled sale — its money and stock never count anywhere. */
+export const isCancelled = (sale: Pick<Sale, "cancelState">): boolean =>
+  sale.cancelState === "cancelled";
+
+/**
+ * Sum of a sale's line amounts belonging to a set of product ids — i.e. one
+ * department's slice of a possibly-mixed (Food + Bar) bill.
+ */
+export const deptLineTotal = (
+  sale: Pick<Sale, "items">,
+  deptProductIds: Set<string>,
+): number =>
+  sale.items
+    .filter((i) => deptProductIds.has(i.productId))
+    .reduce((a, i) => a + i.amount, 0);
+
+/**
+ * A department's share of a sale paid by a given method. A split payment (part
+ * cash / part M-Pesa) is apportioned by the department's slice of the bill, so a
+ * mixed Food+Bar receipt counts correctly in each department's cash/M-Pesa totals.
+ */
+export const deptPaidVia = (
+  sale: Pick<Sale, "payment" | "payments" | "subtotal" | "items">,
+  method: PaymentMethod,
+  deptProductIds: Set<string>,
+): number =>
+  sale.subtotal > 0
+    ? paidVia(sale, method) * (deptLineTotal(sale, deptProductIds) / sale.subtotal)
+    : 0;
+
+/**
+ * How many whole BOTTLES a sale line represents. A bar pour converts by volume
+ * (a 30 ml tot of a 750 ml bottle = 0.04 bottle); everything else is its quantity.
+ * This is what keeps "sold" comparable to opening/purchased stock, which is in bottles.
+ */
+export const bottleEquivalent = (
+  item: Pick<SaleItem, "quantity" | "servingMl">,
+  product: Pick<Product, "containerMl">,
+): number =>
+  product.containerMl
+    ? item.quantity * ((item.servingMl ?? product.containerMl) / product.containerMl)
+    : item.quantity;
+
 export const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;

@@ -20,7 +20,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useProducts, useSales } from "@/lib/butchery-store";
-import { Sale, paidVia, todayISO } from "@/lib/butchery-types";
+import { Sale, deptLineTotal, deptPaidVia, isCancelled, todayISO } from "@/lib/butchery-types";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { ksh, qty } from "@/lib/format";
@@ -67,27 +67,20 @@ export const Transactions = () => {
       });
   }, [allSales, deptProductIds, lo, hi, pay, search]);
 
-  // A sale's revenue that belongs to THIS department = sum of its line amounts
-  // for products in this department. For a single-department cashier this equals
-  // the whole subtotal; for a mixed bill it's just this department's slice, so
-  // totals never double-count across Food and Bar.
-  const deptAmount = (s: Sale) =>
-    s.items
-      .filter((i) => deptProductIds.has(i.productId))
-      .reduce((a, i) => a + i.amount, 0);
-
-  // A split sale's method amounts are apportioned to this department by its share.
-  const deptPaidVia = (s: Sale, method: "cash" | "mpesa" | "credit") =>
-    s.subtotal > 0 ? paidVia(s, method) * (deptAmount(s) / s.subtotal) : 0;
+  // Thin bindings over the SHARED sale maths (butchery-types) so this screen and
+  // the Report can never compute a department's slice differently.
+  const deptAmount = (s: Sale) => deptLineTotal(s, deptProductIds);
+  const deptPaid = (s: Sale, method: "cash" | "mpesa" | "credit") =>
+    deptPaidVia(s, method, deptProductIds);
 
   const totals = useMemo(() => {
     const t = { cash: 0, mpesa: 0, credit: 0, all: 0 };
     rows.forEach((s) => {
       // A cancelled sale is void — it never counts toward the money totals.
-      if (s.cancelState === "cancelled") return;
-      t.cash += deptPaidVia(s, "cash");
-      t.mpesa += deptPaidVia(s, "mpesa");
-      t.credit += deptPaidVia(s, "credit");
+      if (isCancelled(s)) return;
+      t.cash += deptPaid(s, "cash");
+      t.mpesa += deptPaid(s, "mpesa");
+      t.credit += deptPaid(s, "credit");
       t.all += deptAmount(s);
     });
     return t;
@@ -223,7 +216,7 @@ export const Transactions = () => {
                   <tr
                     key={s.id}
                     className={`border-t hover:bg-muted/40 align-top ${
-                      s.cancelState === "cancelled" ? "opacity-55" : ""
+                      isCancelled(s) ? "opacity-55" : ""
                     }`}
                   >
                     <td className="p-3 font-mono text-xs">{s.receiptNo}</td>
@@ -282,7 +275,7 @@ export const Transactions = () => {
                           <ReceiptIcon className="h-3.5 w-3.5 mr-1" /> View
                         </Button>
 
-                        {s.payment === "credit" && !s.paid && s.cancelState !== "cancelled" && (
+                        {s.payment === "credit" && !s.paid && !isCancelled(s) && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -293,7 +286,7 @@ export const Transactions = () => {
                         )}
 
                         {/* Cancellation controls depend on the sale's state + role. */}
-                        {s.cancelState === "cancelled" ? (
+                        {isCancelled(s) ? (
                           <Badge variant="destructive" className="gap-1">
                             <Ban className="h-3 w-3" /> Cancelled
                           </Badge>

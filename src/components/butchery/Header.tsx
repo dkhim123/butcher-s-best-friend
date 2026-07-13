@@ -3,7 +3,7 @@ import { Hotel, LogOut, Moon, Sun, User, UtensilsCrossed, Wine } from "lucide-re
 import { useTheme } from "next-themes";
 import { ksh } from "@/lib/format";
 import { useSales } from "@/lib/butchery-store";
-import { todayISO, Department, DEPARTMENT_SHORT_LABELS } from "@/lib/butchery-types";
+import { todayISO, Department, DEPARTMENT_SHORT_LABELS, isCancelled } from "@/lib/butchery-types";
 import { useAuth } from "@/contexts/AuthContext";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { InstallButton } from "@/components/InstallButton";
@@ -104,8 +104,11 @@ function ThemeToggle() {
 export const Header = () => {
   const { sales } = useSales(todayISO());
   const { profile, org, branch, signOut } = useAuth();
-  const total = sales.reduce((a, s) => a + s.subtotal, 0);
-  const credit = sales
+  // Exclude cancelled sales — a void receipt never counts, so this matches the
+  // Report and Transactions totals exactly (no more "Header shows more than Report").
+  const live = sales.filter((s) => !isCancelled(s));
+  const total = live.reduce((a, s) => a + s.subtotal, 0);
+  const credit = live
     .filter((s) => s.payment === "credit" && !s.paid)
     .reduce((a, s) => a + s.subtotal, 0);
 
