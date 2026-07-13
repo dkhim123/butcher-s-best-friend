@@ -142,29 +142,23 @@ export const DailyReport = () => {
         };
       }
 
-      // Tracked product. Opening and Purchased come from the
-      // stock_movements event log (so they include supplier
-      // deliveries and opening-stock seeds). Sold and Remaining are
-      // derived from sale_items so the visible formula
-      //   Opening + Purchased − Sold = Remaining
-      // ALWAYS balances on screen for tracked products.
+      // Tracked product. Every column comes straight from the
+      // stock_movements event log so the "Out" column reflects ALL stock that
+      // left — sales AND kitchen usage AND waste AND negative adjustments —
+      // which is why:
+      //   Opening + Purchased − Out = Remaining
+      // ALWAYS balances AND Remaining matches the live on-hand.
       //
-      // Important trade-off: if someone records waste or a
-      // negative adjustment, this Remaining will be HIGHER than the
-      // live stock-on-hand the POS shows. That divergence is
-      // intentional — the discrepancy itself is the signal that
-      // something other than a sale happened, and the Inventory →
-      // Stock log tab makes that visible at a glance.
+      // This is the fix for ingredients: they leave stock through Kitchen
+      // usage, not sales. Using sales-only here made Remaining ignore the
+      // chef's usage (e.g. flour showed 30 kg remaining after 2.5 kg was used).
       const stock = dailyStock(p.id);
-      const opening = stock.opening;
-      const purchased = stock.purchased;
-      const remaining = Math.max(opening + purchased - soldFromSales, 0);
       return {
         product: p,
-        opening: opening as number | null,
-        purchased: purchased as number | null,
-        sold: soldFromSales,
-        remaining: remaining as number | null,
+        opening: stock.opening as number | null,
+        purchased: stock.purchased as number | null,
+        sold: stock.sold, // total outflow (sales + usage + waste + adjustments)
+        remaining: stock.remaining as number | null,
         revenue,
         cogs,
         profit,
@@ -687,7 +681,7 @@ export const DailyReport = () => {
               <TrendingUp className="h-4 w-4 text-primary" /> Stock Movement per Product
             </h3>
             <p className="text-xs text-muted-foreground">
-              Opening + Purchased − Sold = Remaining
+              Opening + Purchased − Out = Remaining (Out = sold + kitchen usage)
             </p>
           </div>
           <div className="text-right">
@@ -703,7 +697,7 @@ export const DailyReport = () => {
                 <th className="text-left p-3 font-semibold">Product</th>
                 <th className="text-right p-3 font-semibold">Opening</th>
                 <th className="text-right p-3 font-semibold">+ Purchased</th>
-                <th className="text-right p-3 font-semibold">− Sold</th>
+                <th className="text-right p-3 font-semibold">− Out</th>
                 <th className="text-right p-3 font-semibold">Remaining</th>
                 <th className="text-right p-3 font-semibold">Revenue</th>
                 <th className="text-right p-3 font-semibold">Profit</th>
