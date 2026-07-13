@@ -34,10 +34,15 @@ export const Transactions = () => {
   const { allSales, update, requestCancel, approveCancel, rejectCancel } = useSales();
   const isManagerOrAbove = role === "admin" || role === "manager";
 
-  const [date, setDate] = useState<string>(todayISO());
+  // Date RANGE filter (defaults to today→today = a single day).
+  const [from, setFrom] = useState<string>(todayISO());
+  const [to, setTo] = useState<string>(todayISO());
   const [pay, setPay] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Sale | null>(null);
+  // Compare with the earlier date first so an inverted range still works.
+  const lo = from <= to ? from : to;
+  const hi = from <= to ? to : from;
 
   // Product IDs in the active department — used to keep this history scoped to
   // the Bar or the Restaurant, matching the header switcher.
@@ -49,7 +54,7 @@ export const Transactions = () => {
   const rows = useMemo(() => {
     return allSales
       .filter((s) => s.items.some((i) => deptProductIds.has(i.productId)))
-      .filter((s) => (date ? s.date === date : true))
+      .filter((s) => s.date >= lo && s.date <= hi)
       .filter((s) => (pay === "all" ? true : s.payment === pay))
       .filter((s) => {
         if (!search.trim()) return true;
@@ -60,7 +65,7 @@ export const Transactions = () => {
           (s.mpesaRef ?? "").toLowerCase().includes(q)
         );
       });
-  }, [allSales, deptProductIds, date, pay, search]);
+  }, [allSales, deptProductIds, lo, hi, pay, search]);
 
   // A sale's revenue that belongs to THIS department = sum of its line amounts
   // for products in this department. For a single-department cashier this equals
@@ -158,10 +163,14 @@ export const Transactions = () => {
       </div>
 
       <Card className="p-4 shadow-soft">
-        <div className="grid sm:grid-cols-3 gap-3">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="space-y-1">
-            <Label className="text-xs">Date</Label>
-            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <Label className="text-xs">From</Label>
+            <Input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">To</Label>
+            <Input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Payment</Label>

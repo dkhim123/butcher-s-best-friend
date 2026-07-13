@@ -179,7 +179,9 @@ CREATE TABLE IF NOT EXISTS public.shifts (
   status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
   note          TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_shifts_open
+-- UNIQUE (partial): a cashier can have at most ONE open shift at a time, so
+-- their cash-up can never be split across two accidentally-opened shifts.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_open
   ON public.shifts (branch_id, cashier_id) WHERE status = 'open';
 
 -- 1.11 Sales — one row per receipt
@@ -741,8 +743,17 @@ DECLARE v_shift public.shifts%ROWTYPE;
 BEGIN
   SELECT * INTO v_shift FROM public.shifts WHERE branch_id = p_branch_id AND cashier_id = p_cashier_id AND status = 'open' LIMIT 1;
   IF v_shift.id IS NOT NULL THEN RETURN v_shift; END IF;
+  -- Race-safe: the unique partial index (branch_id, cashier_id) WHERE open
+  -- guarantees one open shift. If a concurrent request wins, DO NOTHING and
+  -- return the shift it created instead of erroring.
   INSERT INTO public.shifts (org_id, branch_id, cashier_id, opening_float)
-    VALUES (p_org_id, p_branch_id, p_cashier_id, COALESCE(p_opening_float,0)) RETURNING * INTO v_shift;
+    VALUES (p_org_id, p_branch_id, p_cashier_id, COALESCE(p_opening_float,0))
+    ON CONFLICT (branch_id, cashier_id) WHERE status = 'open' DO NOTHING
+    RETURNING * INTO v_shift;
+  IF v_shift.id IS NULL THEN
+    SELECT * INTO v_shift FROM public.shifts
+     WHERE branch_id = p_branch_id AND cashier_id = p_cashier_id AND status = 'open' LIMIT 1;
+  END IF;
   RETURN v_shift;
 END; $$;
 
@@ -832,6 +843,173 @@ BEGIN
    WHERE id = p_sale_id;
 END; $$;
 GRANT EXECUTE ON FUNCTION public.approve_cancel(UUID, UUID) TO anon;
+
+-- 3.13 Atomic sale creation — sale + all its items in ONE transaction.
+-- Prevents "phantom sales" (a sale row with a total but no items, which would
+-- record money without deducting stock) that a multi-step client write could
+-- leave behind on a mid-write failure. Money stays server-authoritative: item
+-- amounts and the sale subtotal are set by the existing triggers.
+-- Also blocks overselling stock-tracked products (race-safe via a per-product
+-- advisory lock) — in practice only the bar, since meals are untracked.
+CREATE OR REPLACE FUNCTION public.create_sale(
+  p_org_id         UUID,
+  p_branch_id      UUID,
+  p_payment        TEXT,
+  p_items          JSONB,                    -- [{product_id, quantity, unit_price, serving_name, serving_ml}]
+  p_payments       JSONB    DEFAULT '[]'::jsonb,
+  p_cash_given     NUMERIC  DEFAULT NULL,
+  p_change         NUMERIC  DEFAULT NULL,
+  p_mpesa_ref      TEXT     DEFAULT NULL,
+  p_customer_name  TEXT     DEFAULT NULL,
+  p_customer_phone TEXT     DEFAULT NULL,
+  p_customer_id    UUID     DEFAULT NULL,
+  p_paid           BOOLEAN  DEFAULT FALSE,
+  p_created_by     UUID     DEFAULT NULL,
+  p_shift_id       UUID     DEFAULT NULL
+) RETURNS public.sales
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+DECLARE
+  v_receipt TEXT;
+  v_sale    public.sales%ROWTYPE;
+  v_item    JSONB;
+  v_pid     UUID;
+  v_onhand  NUMERIC;
+  v_name    TEXT;
+  v_unit    TEXT;
+BEGIN
+  IF p_org_id IS NULL OR p_branch_id IS NULL THEN
+    RAISE EXCEPTION 'Missing organisation or branch' USING ERRCODE = '22023';
+  END IF;
+  IF p_items IS NULL OR jsonb_array_length(p_items) = 0 THEN
+    RAISE EXCEPTION 'A sale must have at least one item' USING ERRCODE = '22023';
+  END IF;
+  IF p_payment NOT IN ('cash','mpesa','credit','split') THEN
+    RAISE EXCEPTION 'Invalid payment method %', p_payment USING ERRCODE = '22023';
+  END IF;
+
+  -- Lock each distinct stock-tracked product (sorted, deadlock-free) so
+  -- concurrent sales of the same product serialise before the oversell check.
+  FOR v_pid IN
+    SELECT DISTINCT (e->>'product_id')::uuid AS pid
+    FROM jsonb_array_elements(p_items) e
+    JOIN public.products p ON p.id = (e->>'product_id')::uuid
+    WHERE p.track_stock IS TRUE
+    ORDER BY 1
+  LOOP
+    PERFORM pg_advisory_xact_lock(hashtext(p_branch_id::text), hashtext(v_pid::text));
+  END LOOP;
+
+  v_receipt := public.next_receipt_no(p_org_id);
+
+  INSERT INTO public.sales (
+    org_id, branch_id, receipt_no, date, payment, payments, subtotal,
+    cash_given, change_amount, mpesa_ref, customer_name, customer_phone,
+    customer_id, paid, created_by, shift_id
+  ) VALUES (
+    -- Business day in Nairobi wall-clock time (same basis as the receipt number).
+    p_org_id, p_branch_id, v_receipt, (NOW() AT TIME ZONE 'Africa/Nairobi')::date,
+    p_payment, COALESCE(p_payments, '[]'::jsonb), 0,
+    p_cash_given, p_change, p_mpesa_ref, p_customer_name, p_customer_phone,
+    p_customer_id, COALESCE(p_paid, FALSE), p_created_by, p_shift_id
+  ) RETURNING * INTO v_sale;
+
+  FOR v_item IN SELECT * FROM jsonb_array_elements(p_items) LOOP
+    INSERT INTO public.sale_items (
+      sale_id, product_id, quantity, unit_price, amount, serving_name, serving_ml
+    ) VALUES (
+      v_sale.id,
+      (v_item->>'product_id')::UUID,
+      (v_item->>'quantity')::NUMERIC,
+      (v_item->>'unit_price')::NUMERIC,
+      0,
+      NULLIF(v_item->>'serving_name', ''),
+      NULLIF(v_item->>'serving_ml', '')::NUMERIC
+    );
+  END LOOP;
+
+  -- Reject if any tracked product went negative. Under the advisory lock this
+  -- read reflects every committed sale, so two cashiers can't both sell the
+  -- last unit; a failure rolls the whole sale back.
+  FOR v_pid IN
+    SELECT DISTINCT (e->>'product_id')::uuid AS pid
+    FROM jsonb_array_elements(p_items) e
+    JOIN public.products p ON p.id = (e->>'product_id')::uuid
+    WHERE p.track_stock IS TRUE
+  LOOP
+    SELECT COALESCE(SUM(delta_qty),0) INTO v_onhand
+    FROM public.stock_movements
+    WHERE branch_id = p_branch_id AND product_id = v_pid;
+    IF v_onhand < 0 THEN
+      SELECT name, unit INTO v_name, v_unit FROM public.products WHERE id = v_pid;
+      RAISE EXCEPTION 'Not enough % in stock — short by % %',
+        COALESCE(v_name,'stock'), ABS(v_onhand), COALESCE(v_unit,'')
+        USING ERRCODE = '23514';
+    END IF;
+  END LOOP;
+
+  SELECT * INTO v_sale FROM public.sales WHERE id = v_sale.id;
+  RETURN v_sale;
+END; $$;
+GRANT EXECUTE ON FUNCTION public.create_sale(
+  UUID, UUID, TEXT, JSONB, JSONB, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, UUID, BOOLEAN, UUID, UUID
+) TO anon;
+
+-- 3.14 Reverse stock when a sale or delivery is deleted.
+-- stock_movements has no FK back to the item rows, so a plain delete used to
+-- orphan the movement and drift inventory. These BEFORE DELETE triggers post an
+-- equal-and-opposite 'adjustment', bringing the deleted record's net stock
+-- effect to zero. They reverse the ACTUAL posted movement (bar fractions exact)
+-- and skip anything already reversed (e.g. a cancelled sale) so stock is never
+-- returned twice.
+CREATE OR REPLACE FUNCTION public.reverse_sale_item_stock()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE m RECORD;
+BEGIN
+  FOR m IN
+    SELECT * FROM public.stock_movements
+    WHERE ref_table = 'sale_items' AND ref_id = OLD.id AND reason = 'sale'
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM public.stock_movements WHERE ref_id = m.id AND reason = 'adjustment'
+    ) THEN
+      INSERT INTO public.stock_movements
+        (org_id, branch_id, product_id, delta_qty, reason, ref_table, ref_id, note)
+      VALUES (m.org_id, m.branch_id, m.product_id, -m.delta_qty, 'adjustment',
+              'sale_item_delete', m.id, 'Sale deleted — stock returned')
+      ON CONFLICT DO NOTHING;
+    END IF;
+  END LOOP;
+  RETURN OLD;
+END; $$;
+DROP TRIGGER IF EXISTS sale_item_delete_reverse ON public.sale_items;
+CREATE TRIGGER sale_item_delete_reverse
+  BEFORE DELETE ON public.sale_items
+  FOR EACH ROW EXECUTE FUNCTION public.reverse_sale_item_stock();
+
+CREATE OR REPLACE FUNCTION public.reverse_po_item_stock()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE m RECORD;
+BEGIN
+  FOR m IN
+    SELECT * FROM public.stock_movements
+    WHERE ref_table = 'purchase_order_items' AND ref_id = OLD.id AND reason = 'purchase'
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM public.stock_movements WHERE ref_id = m.id AND reason = 'adjustment'
+    ) THEN
+      INSERT INTO public.stock_movements
+        (org_id, branch_id, product_id, delta_qty, reason, ref_table, ref_id, note)
+      VALUES (m.org_id, m.branch_id, m.product_id, -m.delta_qty, 'adjustment',
+              'po_item_delete', m.id, 'Delivery deleted — stock removed')
+      ON CONFLICT DO NOTHING;
+    END IF;
+  END LOOP;
+  RETURN OLD;
+END; $$;
+DROP TRIGGER IF EXISTS po_item_delete_reverse ON public.purchase_order_items;
+CREATE TRIGGER po_item_delete_reverse
+  BEFORE DELETE ON public.purchase_order_items
+  FOR EACH ROW EXECUTE FUNCTION public.reverse_po_item_stock();
 
 
 -- ╔══════════════════════════════════════════════════════════════╗

@@ -25,7 +25,9 @@ export default defineConfig(() => ({
         theme_color: "#a32420",
         background_color: "#ffffff",
         display: "standalone",
-        orientation: "portrait",
+        // Let the device rotate freely — the POS is built for landscape on a
+        // tablet/laptop, but should also work upright on a phone.
+        orientation: "any",
         start_url: "/",
         scope: "/",
         icons: [

@@ -3,6 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Wallet,
   BarChart3,
@@ -11,7 +12,11 @@ import {
   Beef,
   PieChart,
   ChefHat,
+  Download,
+  Printer,
 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
+import { downloadCsv, printHtml, REPORT_PRINT_CSS } from "@/lib/report-export";
 import {
   useDailyStockReport,
   useKitchenUsage,
@@ -21,16 +26,31 @@ import {
   useSalesByCategory,
   useTopFoodGroups,
 } from "@/lib/butchery-store";
-import { DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, isIngredient, paidVia, Product, todayISO } from "@/lib/butchery-types";
+import { ACTIVE_DEPARTMENTS, DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, isIngredient, paidVia, Product, todayISO } from "@/lib/butchery-types";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { ksh, qty } from "@/lib/format";
 
 export const DailyReport = () => {
   const { active: activeDepartment } = useActiveDepartment();
-  const [date, setDate] = useState<string>(todayISO());
+  const { org } = useAuth();
+  // Date RANGE. Defaults to today→today (a single day) but the user can widen it
+  // to, say, June 1 → Dec 1 and print/export the whole period.
+  const [from, setFrom] = useState<string>(todayISO());
+  const [to, setTo] = useState<string>(todayISO());
+  // Guard against an inverted range (to before from) so filters never go empty
+  // by accident — we always compare with the earlier date first.
+  const lo = from <= to ? from : to;
+  const hi = from <= to ? to : from;
+  const singleDay = lo === hi;
   const { products: allProducts } = useProducts();
-  const { sales: allDaySales } = useSales(date);
-  const { orders: dayOrders } = usePurchaseOrders(date);
+  const { sales: everySale } = useSales();
+  const { orders: everyOrder } = usePurchaseOrders();
+
+  // Sales within the selected range (all departments; sliced per-dept below).
+  const allDaySales = useMemo(
+    () => everySale.filter((s) => s.date >= lo && s.date <= hi),
+    [everySale, lo, hi],
+  );
 
   // Everything on this report is scoped to the department in focus, so the
   // Bar's report shows only Bar money & stock, and the Restaurant's only food.
@@ -55,19 +75,22 @@ export const DailyReport = () => {
       ),
     [allDaySales, deptProductIds],
   );
-  // This department's deliveries recorded on this date (multi-line POs).
+  // This department's deliveries recorded within the range (multi-line POs).
   const deptOrders = useMemo(
-    () => dayOrders.filter((o) => o.department === activeDepartment),
-    [dayOrders, activeDepartment],
+    () =>
+      everyOrder.filter(
+        (o) => o.department === activeDepartment && o.date >= lo && o.date <= hi,
+      ),
+    [everyOrder, activeDepartment, lo, hi],
   );
   // Single source of truth for stock numbers in the report — the
   // event log. Replaces the old useStock(date).getOpening which was
   // reading from a legacy table that no part of the system writes to
   // anymore, hence the all-zeros bug in the Opening / Purchased /
   // Available / Remaining columns.
-  const { byProductId: dailyStock } = useDailyStockReport(date);
-  const { rows: byCategory } = useSalesByCategory(date, date, activeDepartment);
-  const { rows: byFoodGroup } = useTopFoodGroups(date, date, activeDepartment);
+  const { byProductId: dailyStock } = useDailyStockReport(lo, hi);
+  const { rows: byCategory } = useSalesByCategory(lo, hi, activeDepartment);
+  const { rows: byFoodGroup } = useTopFoodGroups(lo, hi, activeDepartment);
 
   const rows = useMemo(() => {
     return products.map((p) => {
@@ -186,7 +209,7 @@ export const DailyReport = () => {
   // ingredient was used today (Kitchen tab); we cost that usage (used × buying
   // price) and compare it against the day's food sales. A rising food-cost %
   // is the early signal for over-portioning, waste, or theft.
-  const { rows: usageRows } = useKitchenUsage(date);
+  const { rows: usageRows } = useKitchenUsage(lo, hi);
   const ingredients = useMemo(() => products.filter(isIngredient), [products]);
 
   const usageLines = useMemo(() => {
@@ -217,6 +240,104 @@ export const DailyReport = () => {
           ? { label: "Watch", cls: "text-amber-600", bar: "bg-amber-500" }
           : { label: "High", cls: "text-destructive", bar: "bg-destructive" };
 
+  // Combined sales report: one section per department (Main Kitchen / Main Bar),
+  // each listing every item sold that day with quantity + amount, a section
+  // total, and a grand total across both. Aggregates ALL departments' sales for
+  // the selected date (independent of the department currently in focus), and
+  // drops cancelled sales. Bar pours are their own line (e.g. "KC Smooth (Tot)").
+  const SECTION_TITLE: Record<string, string> = {
+    restaurant: "Main Kitchen (Restaurant)",
+    bar: "Main Bar (Wines & Spirits)",
+    rooms: "Rooms",
+  };
+  // Human label + filename-safe token for the selected period.
+  const rangeLabel = singleDay ? lo : `${lo} to ${hi}`;
+  const rangeFile = singleDay ? lo : `${lo}_to_${hi}`;
+
+  const buildSections = () => {
+    const sections = ACTIVE_DEPARTMENTS.map((dept) => {
+      const map = new Map<string, { name: string; qty: number; amount: number }>();
+      for (const s of allDaySales) {
+        if (s.cancelState === "cancelled") continue;
+        for (const it of s.items) {
+          const p = allProducts.find((x) => x.id === it.productId);
+          if (!p || p.department !== dept) continue;
+          const key = `${it.productId}|${it.servingName ?? ""}`;
+          const name = p.name + (it.servingName ? ` (${it.servingName})` : "");
+          const e = map.get(key) ?? { name, qty: 0, amount: 0 };
+          e.qty += it.quantity;
+          e.amount += it.amount;
+          map.set(key, e);
+        }
+      }
+      const items = [...map.values()].sort((a, b) => b.amount - a.amount);
+      const total = items.reduce((a, i) => a + i.amount, 0);
+      return { dept, items, total };
+    });
+    const grand = sections.reduce((a, s) => a + s.total, 0);
+    return { sections, grand };
+  };
+
+  const qn = (n: number) => Number(n.toFixed(3)); // tidy quantity number
+
+  // ── Export the combined sales report as CSV ──
+  const handleExportCsv = () => {
+    const { sections, grand } = buildSections();
+    const now = new Date().toLocaleString("en-KE");
+    const out: (string | number | null)[][] = [
+      [org?.name ?? "Business"],
+      ["Sales Report"],
+      [singleDay ? "Date" : "Period", rangeLabel],
+      ["Generated", now],
+      [],
+    ];
+    for (const sec of sections) {
+      out.push([SECTION_TITLE[sec.dept]]);
+      out.push(["Item", "Quantity", "Amount"]);
+      for (const i of sec.items) out.push([i.name, qn(i.qty), Math.round(i.amount)]);
+      out.push([`${SECTION_TITLE[sec.dept].split(" (")[0]} total`, "", Math.round(sec.total)]);
+      out.push([]);
+    }
+    out.push(["GRAND TOTAL", "", Math.round(grand)]);
+    downloadCsv(`sales_report_${rangeFile}.csv`, out);
+  };
+
+  // ── Print the combined sales report (A4) ──
+  const handlePrint = () => {
+    const esc = (s: string) =>
+      s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] ?? c));
+    const { sections, grand } = buildSections();
+    const now = new Date().toLocaleString("en-KE");
+
+    let body =
+      `<h1>${esc(org?.name ?? "Business")}</h1>` +
+      `<p class="sub">Sales Report &middot; ${esc(rangeLabel)}<br>Generated: ${esc(now)}</p>`;
+
+    for (const sec of sections) {
+      body += `<h2>${esc(SECTION_TITLE[sec.dept])}</h2>`;
+      if (sec.items.length === 0) {
+        body += `<p class="empty">No sales for this date.</p>`;
+        continue;
+      }
+      body +=
+        `<table class="grid"><thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead><tbody>` +
+        sec.items
+          .map(
+            (i) =>
+              `<tr><td>${esc(i.name)}</td><td class="num">${qn(i.qty)}</td><td class="num">${ksh(i.amount)}</td></tr>`,
+          )
+          .join("") +
+        `</tbody><tfoot><tr><td>${esc(SECTION_TITLE[sec.dept].split(" (")[0])} total</td>` +
+        `<td></td><td class="num">${ksh(sec.total)}</td></tr></tfoot></table>`;
+    }
+
+    body +=
+      `<table class="grand"><tr><td>GRAND TOTAL</td><td class="num">${ksh(grand)}</td></tr></table>` +
+      `<p class="foot">Printed ${esc(now)}</p>`;
+
+    printHtml(`Sales Report ${rangeLabel}`, body, REPORT_PRINT_CSS);
+  };
+
   return (
     <div className="space-y-6">
       <Card className="p-5 shadow-soft">
@@ -232,14 +353,33 @@ export const DailyReport = () => {
               Stock movement, sales, and accountability summary
             </p>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Date</Label>
-            <Input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-44"
-            />
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="space-y-1">
+              <Label className="text-xs">From</Label>
+              <Input
+                type="date"
+                value={from}
+                max={to}
+                onChange={(e) => setFrom(e.target.value)}
+                className="w-40"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">To</Label>
+              <Input
+                type="date"
+                value={to}
+                min={from}
+                onChange={(e) => setTo(e.target.value)}
+                className="w-40"
+              />
+            </div>
+            <Button variant="outline" size="sm" className="gap-1.5 h-10" onClick={handleExportCsv}>
+              <Download className="h-4 w-4" /> CSV
+            </Button>
+            <Button variant="outline" size="sm" className="gap-1.5 h-10" onClick={handlePrint}>
+              <Printer className="h-4 w-4" /> Print
+            </Button>
           </div>
         </div>
       </Card>

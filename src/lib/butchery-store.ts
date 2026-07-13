@@ -728,55 +728,44 @@ export function useSales(date?: string) {
     mutationFn: async (
       s: Omit<Sale, "id" | "timestamp" | "date" | "subtotal" | "receiptNo">,
     ) => {
-      const subtotal = s.items.reduce((a, i) => a + i.amount, 0);
+      // One atomic call: the create_sale RPC writes the sale AND its items in a
+      // single transaction, so a mid-write failure can never leave a "phantom
+      // sale" (money recorded, no items, stock not deducted). The server draws
+      // the receipt number and computes the subtotal, so both are authoritative.
+      const { data: saleRow, error } = await supabase.rpc("create_sale", {
+        p_org_id: orgId,
+        p_branch_id: branchId,
+        p_payment: s.payment,
+        // Round-trip through JSON to drop any undefined `ref` and match JSONB.
+        p_items: JSON.parse(
+          JSON.stringify(
+            s.items.map((item) => ({
+              product_id: item.productId,
+              quantity: item.quantity,
+              unit_price: item.unitPrice,
+              serving_name: item.servingName ?? null,
+              serving_ml: item.servingMl ?? null,
+            })),
+          ),
+        ),
+        p_payments: JSON.parse(JSON.stringify(s.payments ?? [])),
+        p_cash_given: s.cashGiven ?? null,
+        p_change: s.change ?? null,
+        p_mpesa_ref: s.mpesaRef ?? null,
+        p_customer_name: s.customerName ?? null,
+        p_customer_phone: s.customerPhone ?? null,
+        p_customer_id: s.customerId ?? null,
+        p_paid: s.paid ?? false,
+        p_created_by: profileId,
+        p_shift_id: s.shiftId ?? null,
+      });
+      // Surface the DB's own message (e.g. "Not enough Tusker in stock — short
+      // by 2 bottle") instead of a generic failure — it's a plain object, so
+      // wrap it in a real Error for the POS's `instanceof Error` toast.
+      if (error) throw new Error(error.message);
 
-      const { data: receiptNo, error: receiptErr } = await supabase.rpc(
-        "next_receipt_no",
-        { p_org_id: orgId },
-      );
-      if (receiptErr) throw receiptErr;
-
-      const { data: saleRow, error: saleErr } = await supabase
-        .from("sales")
-        .insert({
-          org_id: orgId,
-          branch_id: branchId,
-          receipt_no: receiptNo as string,
-          date: todayISO(),
-          payment: s.payment,
-          // Round-trip through JSON to drop any undefined `ref` and satisfy the
-          // JSONB column type.
-          payments: JSON.parse(JSON.stringify(s.payments ?? [])),
-          subtotal,
-          cash_given: s.cashGiven ?? null,
-          change_amount: s.change ?? null,
-          mpesa_ref: s.mpesaRef ?? null,
-          customer_name: s.customerName ?? null,
-          customer_phone: s.customerPhone ?? null,
-          customer_id: s.customerId ?? null,
-          paid: s.paid ?? false,
-          created_by: profileId,
-          shift_id: s.shiftId ?? null,
-        })
-        .select()
-        .single();
-      if (saleErr) throw saleErr;
-
-      if (s.items.length > 0) {
-        const { error: itemsErr } = await supabase.from("sale_items").insert(
-          s.items.map((item) => ({
-            sale_id: (saleRow as { id: string }).id,
-            product_id: item.productId,
-            quantity: item.quantity,
-            unit_price: item.unitPrice,
-            amount: item.amount,
-            serving_name: item.servingName ?? null,
-            serving_ml: item.servingMl ?? null,
-          })),
-        );
-        if (itemsErr) throw itemsErr;
-      }
-
+      // The RPC returns the sales row (authoritative id/receipt_no/subtotal).
+      // Attach the items we just sent so the receipt can render immediately.
       return mapSale({
         ...(saleRow as Record<string, unknown>),
         sale_items: s.items.map((i) => ({
@@ -1297,19 +1286,19 @@ export interface KitchenUsageRow {
   qtyUsed: number; // total used that day, in the product's unit (always positive)
 }
 
-export function useKitchenUsage(date: string = todayISO()) {
+export function useKitchenUsage(from: string = todayISO(), to: string = from) {
   const orgId = getOrgId();
   const branchId = getBranchId();
   const qc = useQueryClient();
   const chId = useRef(`kitchen_usage-${Math.random().toString(36).slice(2)}`);
 
   const { data: rows = [], isLoading } = useQuery({
-    queryKey: ["kitchen_usage", orgId, branchId, date],
+    queryKey: ["kitchen_usage", orgId, branchId, from, to],
     queryFn: async (): Promise<KitchenUsageRow[]> => {
       if (!orgId || !branchId) return [];
-      // Same local-midnight → UTC window logic as useDailyStockReport.
-      const dayStart = new Date(`${date}T00:00:00`);
-      const dayEnd = new Date(dayStart);
+      // Window [from 00:00 .. to+1day 00:00); single day when from===to.
+      const dayStart = new Date(`${from}T00:00:00`);
+      const dayEnd = new Date(`${to}T00:00:00`);
       dayEnd.setDate(dayEnd.getDate() + 1);
 
       const { data, error } = await supabase
@@ -1343,11 +1332,11 @@ export function useKitchenUsage(date: string = todayISO()) {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "stock_movements", filter: `branch_id=eq.${branchId}` },
-        () => qc.invalidateQueries({ queryKey: ["kitchen_usage", orgId, branchId, date] }),
+        () => qc.invalidateQueries({ queryKey: ["kitchen_usage", orgId, branchId, from, to] }),
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [qc, orgId, branchId, date]);
+  }, [qc, orgId, branchId, from, to]);
 
   const byProductId = (pid: string) =>
     rows.find((r) => r.productId === pid)?.qtyUsed ?? 0;
@@ -1577,23 +1566,24 @@ export interface DailyStockBreakdown {
   remaining: number;
 }
 
-export function useDailyStockReport(date: string = todayISO()) {
+export function useDailyStockReport(from: string = todayISO(), to: string = from) {
   const orgId = getOrgId();
   const branchId = getBranchId();
   const qc = useQueryClient();
   const chId = useRef(`daily_stock_report-${Math.random().toString(36).slice(2)}`);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["daily_stock_report", orgId, branchId, date],
+    queryKey: ["daily_stock_report", orgId, branchId, from, to],
     queryFn: async (): Promise<Map<string, DailyStockBreakdown>> => {
       const empty = new Map<string, DailyStockBreakdown>();
       if (!orgId || !branchId) return empty;
 
-      // Interpret `date` as LOCAL midnight. JavaScript automatically
-      // converts to UTC for the ISO string the DB compares against, so
-      // we never lose hours to timezone confusion.
-      const dayStart = new Date(`${date}T00:00:00`);
-      const dayEnd = new Date(dayStart);
+      // Window = [from 00:00 .. to+1day 00:00). For a single day from===to.
+      // Movements before `from` roll into Opening; those inside the window are
+      // Purchased/Sold — so Opening + Purchased − Sold = Remaining at range end.
+      // Local midnight → UTC conversion is automatic, so no timezone drift.
+      const dayStart = new Date(`${from}T00:00:00`);
+      const dayEnd = new Date(`${to}T00:00:00`);
       dayEnd.setDate(dayEnd.getDate() + 1);
 
       const dayStartIso = dayStart.toISOString();
@@ -1689,11 +1679,11 @@ export function useDailyStockReport(date: string = todayISO()) {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "stock_movements", filter: `branch_id=eq.${branchId}` },
-        () => qc.invalidateQueries({ queryKey: ["daily_stock_report", orgId, branchId, date] }),
+        () => qc.invalidateQueries({ queryKey: ["daily_stock_report", orgId, branchId, from, to] }),
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [qc, orgId, branchId, date]);
+  }, [qc, orgId, branchId, from, to]);
 
   const byProductId = (pid: string): DailyStockBreakdown =>
     data?.get(pid) ?? { opening: 0, purchased: 0, sold: 0, remaining: 0 };

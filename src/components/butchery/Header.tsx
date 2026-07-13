@@ -146,9 +146,9 @@ export const Header = () => {
         </div>
 
         <div className="flex items-center gap-3 sm:gap-4 shrink-0">
-          <div className="hidden md:block">
-            <InstallButton variant="ghost" />
-          </div>
+          {/* Shown on every screen size (incl. phones) — the button already
+              hides itself when the app is installed or can't be installed. */}
+          <InstallButton variant="ghost" />
           <DepartmentSwitcher />
 
           <div className="text-right hidden sm:block">
