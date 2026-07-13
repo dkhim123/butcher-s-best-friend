@@ -164,12 +164,13 @@ export const DailyReport = () => {
 
   // Thin bindings over the SHARED sale maths (butchery-types) — identical logic
   // to the Transactions screen, defined once so the two can never disagree.
-  const deptPaid = (s: (typeof sales)[number], method: "cash" | "mpesa" | "credit") =>
+  const deptPaid = (s: (typeof sales)[number], method: "cash" | "mpesa" | "card" | "credit") =>
     deptPaidVia(s, method, deptProductIds);
 
   const totalRevenue = rows.reduce((a, r) => a + r.revenue, 0);
   const cashTotal = sales.reduce((a, s) => a + deptPaid(s, "cash"), 0);
   const mpesaTotal = sales.reduce((a, s) => a + deptPaid(s, "mpesa"), 0);
+  const cardTotal = sales.reduce((a, s) => a + deptPaid(s, "card"), 0);
   const creditTotal = sales.reduce((a, s) => a + deptPaid(s, "credit"), 0);
   const creditUnpaid = sales
     .filter((s) => !s.paid)
@@ -366,7 +367,7 @@ export const DailyReport = () => {
         </div>
       </Card>
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <Card className="p-5 shadow-soft bg-gradient-primary text-primary-foreground">
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs uppercase tracking-wider opacity-80">Total Revenue</p>
@@ -382,6 +383,10 @@ export const DailyReport = () => {
         <Card className="p-5 shadow-soft">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">M-Pesa</p>
           <p className="text-2xl font-bold">{ksh(mpesaTotal)}</p>
+        </Card>
+        <Card className="p-5 shadow-soft">
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">Card</p>
+          <p className="text-2xl font-bold">{ksh(cardTotal)}</p>
         </Card>
         <Card className={`p-5 shadow-soft ${creditUnpaid > 0 ? "border-destructive/40" : ""}`}>
           <div className="flex items-center justify-between">

@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS public.sales (
   branch_id      UUID NOT NULL REFERENCES public.branches(id) ON DELETE CASCADE,
   receipt_no     TEXT NOT NULL UNIQUE,
   date           DATE NOT NULL DEFAULT CURRENT_DATE,
-  payment        TEXT NOT NULL CHECK (payment IN ('cash','mpesa','credit','split')),
+  payment        TEXT NOT NULL CHECK (payment IN ('cash','mpesa','card','credit','split')),
   -- Split payments: [{"method":"cash","amount":500},{"method":"mpesa","amount":300,"ref":"..."}].
   -- Empty for single-method sales (their amount is the whole subtotal).
   payments       JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -212,7 +212,7 @@ ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS shift_id    UUID REFERENCES pu
 ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS payments    JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE public.sales DROP CONSTRAINT IF EXISTS sales_payment_check;
 ALTER TABLE public.sales ADD CONSTRAINT sales_payment_check
-  CHECK (payment IN ('cash','mpesa','credit','split'));
+  CHECK (payment IN ('cash','mpesa','card','credit','split'));
 -- Cancellation workflow: a cashier requests a cancel, an admin/manager approves.
 ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cancel_state       TEXT NOT NULL DEFAULT 'none';
 ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS cancel_reason      TEXT;
@@ -883,9 +883,7 @@ BEGIN
   IF p_items IS NULL OR jsonb_array_length(p_items) = 0 THEN
     RAISE EXCEPTION 'A sale must have at least one item' USING ERRCODE = '22023';
   END IF;
-  IF p_payment NOT IN ('cash','mpesa','credit','split') THEN
-    RAISE EXCEPTION 'Invalid payment method %', p_payment USING ERRCODE = '22023';
-  END IF;
+  -- Payment validity is enforced by the sales_payment_check constraint on INSERT.
 
   -- Lock each distinct stock-tracked product (sorted, deadlock-free) so
   -- concurrent sales of the same product serialise before the oversell check.

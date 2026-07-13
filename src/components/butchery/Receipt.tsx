@@ -6,6 +6,7 @@ import { RECEIPT_CSS } from "./receipt-styles";
 const payLabel: Record<string, string> = {
   cash: "CASH",
   mpesa: "M-PESA",
+  card: "CARD",
   credit: "CREDIT",
   split: "SPLIT",
 };

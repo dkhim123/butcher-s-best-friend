@@ -70,16 +70,17 @@ export const Transactions = () => {
   // Thin bindings over the SHARED sale maths (butchery-types) so this screen and
   // the Report can never compute a department's slice differently.
   const deptAmount = (s: Sale) => deptLineTotal(s, deptProductIds);
-  const deptPaid = (s: Sale, method: "cash" | "mpesa" | "credit") =>
+  const deptPaid = (s: Sale, method: "cash" | "mpesa" | "card" | "credit") =>
     deptPaidVia(s, method, deptProductIds);
 
   const totals = useMemo(() => {
-    const t = { cash: 0, mpesa: 0, credit: 0, all: 0 };
+    const t = { cash: 0, mpesa: 0, card: 0, credit: 0, all: 0 };
     rows.forEach((s) => {
       // A cancelled sale is void — it never counts toward the money totals.
       if (isCancelled(s)) return;
       t.cash += deptPaid(s, "cash");
       t.mpesa += deptPaid(s, "mpesa");
+      t.card += deptPaid(s, "card");
       t.credit += deptPaid(s, "credit");
       t.all += deptAmount(s);
     });
@@ -148,10 +149,11 @@ export const Transactions = () => {
 
   return (
     <div className="space-y-6">
-      <div className="grid sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <Stat label="Total" value={totals.all} highlight />
         <Stat label="Cash" value={totals.cash} />
         <Stat label="M-Pesa" value={totals.mpesa} />
+        <Stat label="Card" value={totals.card} />
         <Stat label="Credit" value={totals.credit} danger />
       </div>
 

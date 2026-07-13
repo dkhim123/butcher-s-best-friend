@@ -1,5 +1,5 @@
 export type ProductType = "per_kg" | "fixed" | "meal";
-export type PaymentMethod = "cash" | "mpesa" | "credit";
+export type PaymentMethod = "cash" | "mpesa" | "card" | "credit";
 // A sale's overall payment. "split" means it was paid partly cash + partly
 // M-Pesa (the breakdown lives in Sale.payments).
 export type SalePaymentKind = PaymentMethod | "split";

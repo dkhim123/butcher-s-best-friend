@@ -11,6 +11,7 @@ import {
   ShoppingCart,
   Banknote,
   Smartphone,
+  CreditCard,
   Clock,
   Scale,
   PlugZap,
@@ -1057,11 +1058,12 @@ function PaymentSection(props: {
           <span className="text-2xl font-bold text-primary">{ksh(total)}</span>
         </div>
       )}
-      <div className="grid grid-cols-4 gap-1.5">
+      <div className="grid grid-cols-5 gap-1.5">
         {(
           [
             { key: "cash", label: "Cash", icon: Banknote },
             { key: "mpesa", label: "M-Pesa", icon: Smartphone },
+            { key: "card", label: "Card", icon: CreditCard },
             { key: "credit", label: "Credit", icon: Clock },
             { key: "split", label: "Split", icon: SplitSquareHorizontal },
           ] as const
