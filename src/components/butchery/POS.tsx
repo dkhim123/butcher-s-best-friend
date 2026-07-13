@@ -888,7 +888,7 @@ function CartLineRow({
           step={step}
           min={0}
           onChange={(e) => onSetQty(Number(e.target.value) || 0)}
-          className="h-8 w-16 text-center text-sm font-semibold tabular-nums px-1 no-spinner"
+          className="h-9 w-16 text-center text-base font-bold text-foreground tabular-nums px-1 no-spinner"
         />
         <Button
           size="icon"

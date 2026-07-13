@@ -93,27 +93,27 @@ export const REPORT_PRINT_CSS = `
     font-family: ui-monospace, "Cascadia Mono", "Courier New", monospace;
     color: #000;
     width: 72mm;
-    font-size: 11.5px;
+    font-size: 14px;
     font-weight: 700;
-    line-height: 1.35;
+    line-height: 1.4;
     -webkit-font-smoothing: none;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  h1 { font-size: 15px; font-weight: 800; text-align: center; text-transform: uppercase; margin: 0; }
-  h2 { font-size: 12.5px; font-weight: 800; margin: 9px 0 3px; border-bottom: 2px dashed #000; padding-bottom: 2px; }
-  .sub { font-size: 10.5px; text-align: center; margin: 2px 0 8px; }
-  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  h1 { font-size: 19px; font-weight: 800; text-align: center; text-transform: uppercase; margin: 0; }
+  h2 { font-size: 15px; font-weight: 800; margin: 10px 0 4px; border-bottom: 2px dashed #000; padding-bottom: 2px; }
+  .sub { font-size: 12.5px; font-weight: 700; text-align: center; margin: 2px 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .kv td { padding: 2px 0; }
   .kv td:last-child { text-align: right; font-weight: 800; white-space: nowrap; }
-  .grid th, .grid td { padding: 2px 0; text-align: right; vertical-align: top; }
+  .grid th, .grid td { padding: 3px 0; text-align: right; vertical-align: top; font-weight: 700; }
   .grid th:first-child, .grid td:first-child { text-align: left; overflow-wrap: anywhere; padding-right: 4px; }
-  .grid thead th { border-bottom: 1px dashed #000; font-weight: 800; }
-  .grid tfoot td { border-top: 1px dashed #000; font-weight: 800; }
+  .grid thead th { border-bottom: 2px dashed #000; font-weight: 800; font-size: 12.5px; }
+  .grid tfoot td { border-top: 2px dashed #000; font-weight: 800; }
   .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .empty { font-size: 10.5px; margin: 2px 0 6px; }
-  .grand { width: 100%; margin-top: 8px; border-collapse: collapse; }
-  .grand td { border-top: 2px solid #000; padding: 5px 0; font-size: 14px; font-weight: 800; }
+  .empty { font-size: 12.5px; margin: 2px 0 6px; }
+  .grand { width: 100%; margin-top: 10px; border-collapse: collapse; }
+  .grand td { border-top: 3px solid #000; padding: 6px 0; font-size: 17px; font-weight: 800; }
   .grand td:last-child { text-align: right; }
-  .foot { margin-top: 10px; font-size: 10px; text-align: center; }
+  .foot { margin-top: 12px; font-size: 12px; font-weight: 700; text-align: center; }
 `;
