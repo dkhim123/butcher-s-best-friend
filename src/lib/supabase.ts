@@ -1,8 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./database.types";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+// .trim() is critical: if the env var was pasted with a trailing newline, that
+// newline is harmless for REST but becomes "%0A" in the Realtime WebSocket URL,
+// which fails auth ("HTTP Authentication failed") and kills all live updates.
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string)?.trim();
+const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string)?.trim();
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
