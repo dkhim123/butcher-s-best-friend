@@ -52,21 +52,30 @@ export function printHtml(title: string, bodyHtml: string, css = "") {
   );
   doc.close();
 
+  // Remove the iframe ONLY after the print dialog is dismissed (afterprint).
+  // Removing it right after calling print() — as we used to — yanked the print
+  // source while Chrome's preview was still rendering (slow thermal drivers +
+  // bigger reports), causing "Print preview failed". A long fallback prevents a
+  // leak if afterprint never fires.
   let removed = false;
   const cleanup = () => {
     if (removed) return;
     removed = true;
-    setTimeout(() => iframe.remove(), 300);
+    iframe.remove();
   };
   cw.addEventListener("afterprint", cleanup);
-  setTimeout(() => {
+  const fallback = window.setTimeout(cleanup, 120000);
+
+  // Give the layout (and any images) a moment, then open the print dialog.
+  window.setTimeout(() => {
     try {
       cw.focus();
       cw.print();
-    } finally {
+    } catch {
+      window.clearTimeout(fallback);
       cleanup();
     }
-  }, 250);
+  }, 300);
 }
 
 /** Shared print stylesheet for tabular reports (A4, readable, dashed rules). */

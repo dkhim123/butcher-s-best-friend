@@ -75,23 +75,26 @@ export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopNa
     doc.write(html);
     doc.close();
 
-    // Remove the iframe once printing is done. Guard so it only runs once
-    // whether we're triggered by the afterprint event or the fallback.
+    // Remove the iframe ONLY after the print dialog closes (afterprint). Yanking
+    // it right after calling print() destroyed the print source while the
+    // preview was still rendering ("Print preview failed" on slow thermal
+    // drivers). A long fallback prevents a leak if afterprint never fires.
     let removed = false;
     const cleanup = () => {
       if (removed) return;
       removed = true;
-      // Defer so the browser isn't mid-print when the node is yanked.
-      setTimeout(() => iframe.remove(), 300);
+      iframe.remove();
     };
     cw.addEventListener("afterprint", cleanup);
+    const fallback = window.setTimeout(cleanup, 120000);
 
     // Give the logo image a moment to load before printing.
     setTimeout(() => {
       try {
         cw.focus();
         cw.print();
-      } finally {
+      } catch {
+        window.clearTimeout(fallback);
         cleanup();
       }
     }, 250);
