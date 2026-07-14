@@ -277,12 +277,15 @@ export const Transactions = () => {
                       {s.items
                         .map((it, i) => {
                           const p = products.find((x) => x.id === it.productId);
+                          const label = p?.name ?? it.description ?? "—";
                           return (
                             <div key={i}>
-                              <span className="font-medium">{p?.name ?? "—"}</span>{" "}
-                              <span className="text-muted-foreground">
-                                ({qty(it.quantity, it.servingName ?? p?.unit ?? "")})
-                              </span>
+                              <span className="font-medium">{label}</span>{" "}
+                              {p && (
+                                <span className="text-muted-foreground">
+                                  ({qty(it.quantity, it.servingName ?? p.unit ?? "")})
+                                </span>
+                              )}
                             </div>
                           );
                         })}

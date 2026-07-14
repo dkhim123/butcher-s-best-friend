@@ -1,6 +1,6 @@
 export type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
 
-export type UserRole = "super_admin" | "admin" | "manager" | "cashier" | "pending";
+export type UserRole = "super_admin" | "admin" | "manager" | "cashier" | "room_manager" | "pending";
 
 export type Department = "restaurant" | "bar" | "rooms";
 
@@ -20,6 +20,8 @@ export interface UserPermissions {
   can_view_products?: boolean;
   can_view_stock?: boolean;
   can_manage_credit?: boolean;
+  /** Room manager: sees ONLY the Rooms page (hotel front desk), no POS. */
+  can_manage_rooms?: boolean;
   /**
    * Which departments a cashier is allowed to work in. Empty/undefined for
    * admin & manager, who implicitly see every department. A Bar cashier is

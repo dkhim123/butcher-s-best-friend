@@ -11,6 +11,8 @@ import { Transactions } from "@/components/butchery/Transactions";
 import { UserManagement } from "@/components/butchery/UserManagement";
 import { MySalesReport } from "@/components/butchery/MySalesReport";
 import { Customers } from "@/components/butchery/Customers";
+import { Rooms } from "@/components/butchery/Rooms";
+import { Resources } from "@/components/butchery/Resources";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePendingCancellations } from "@/lib/butchery-store";
 import { DepartmentProvider } from "@/contexts/DepartmentContext";
@@ -26,6 +28,8 @@ import {
   Wallet,
   Settings,
   Menu,
+  BedDouble,
+  Boxes as BoxesIcon,
 } from "lucide-react";
 
 // Tab IDs are kept in one place so the URL hash and the sidebar links
@@ -35,13 +39,15 @@ import {
 // (Products + Purchases + Stock). Its own internal sub-tabs are
 // managed inside Inventory.tsx and encoded in the URL as e.g.
 // "#inventory/purchases".
-type TabId = "dashboard" | "pos" | "inventory" | "transactions" | "report" | "mysales" | "customers" | "users";
+type TabId = "dashboard" | "pos" | "inventory" | "rooms" | "resources" | "transactions" | "report" | "mysales" | "customers" | "users";
 
 // One nav entry per top-level page. Plain-English labels (no jargon) so
 // staff can find things at a glance down the side of the screen.
 const NAV: { id: TabId; label: string; icon: typeof ShoppingCart }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "pos", label: "POS", icon: ShoppingCart },
+  { id: "rooms", label: "Rooms", icon: BedDouble },
+  { id: "resources", label: "Resources", icon: BoxesIcon },
   { id: "inventory", label: "Inventory", icon: Boxes },
   { id: "transactions", label: "Transactions", icon: ReceiptText },
   { id: "report", label: "Reports", icon: BarChart3 },
@@ -82,24 +88,34 @@ const Index = () => {
   // Cashiers get a simple "My Sales" report of their own sales instead.
   const canSeeMySales = role === "cashier";
   const canSeeCustomers = isManagerOrAbove || hasPermission("can_manage_credit");
+  // A Room Manager runs the hotel front desk (Rooms + Resources) and never sees
+  // the POS or anything else. Admins/managers see everything including these.
+  const isRoomManager = role === "room_manager";
   // The dashboard is the admin/manager landing page. Cashiers go straight to POS.
   const canSeeDashboard = isManagerOrAbove;
-  const defaultTab: TabId = canSeeDashboard ? "dashboard" : "pos";
+  // Rooms & Resources: Room Manager, Admin, Manager — never a cashier.
+  const canSeeRooms = isManagerOrAbove || isRoomManager;
+  const canSeeResources = isManagerOrAbove || isRoomManager;
+  const defaultTab: TabId = isRoomManager ? "rooms" : canSeeDashboard ? "dashboard" : "pos";
 
   // Build the set of top-level tabs this user is allowed to see.
   // Anything outside this set is treated as "doesn't exist" — the
   // URL hash router will silently rewrite to the default.
   const allowedTabs = useMemo<Set<TabId>>(() => {
+    // A room manager gets Rooms + Resources and nothing else.
+    if (isRoomManager) return new Set<TabId>(["rooms", "resources"]);
     const s = new Set<TabId>(["pos"]);
     if (canSeeDashboard) s.add("dashboard");
     if (canSeeInventory) s.add("inventory");
+    if (canSeeRooms) s.add("rooms");
+    if (canSeeResources) s.add("resources");
     if (canSeeTransactions) s.add("transactions");
     if (canSeeReports) s.add("report");
     if (canSeeMySales) s.add("mysales");
     if (canSeeCustomers) s.add("customers");
     if (isAdmin) s.add("users");
     return s;
-  }, [canSeeDashboard, canSeeInventory, canSeeTransactions, canSeeReports, canSeeMySales, canSeeCustomers, isAdmin]);
+  }, [isRoomManager, canSeeDashboard, canSeeInventory, canSeeRooms, canSeeResources, canSeeTransactions, canSeeReports, canSeeMySales, canSeeCustomers, isAdmin]);
 
   // The nav entries this user may actually open, in order.
   const navItems = useMemo(() => NAV.filter((n) => allowedTabs.has(n.id)), [allowedTabs]);
@@ -208,6 +224,8 @@ const Index = () => {
                 )}
                 <TabsContent value="pos"><POS /></TabsContent>
                 {canSeeInventory && <TabsContent value="inventory"><Inventory /></TabsContent>}
+                {canSeeRooms && <TabsContent value="rooms"><Rooms /></TabsContent>}
+                {canSeeResources && <TabsContent value="resources"><Resources /></TabsContent>}
                 {canSeeTransactions && <TabsContent value="transactions"><Transactions /></TabsContent>}
                 {canSeeReports && <TabsContent value="report"><DailyReport /></TabsContent>}
                 {canSeeMySales && <TabsContent value="mysales"><MySalesReport /></TabsContent>}

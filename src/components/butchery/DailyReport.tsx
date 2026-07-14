@@ -14,6 +14,7 @@ import {
   ChefHat,
   Download,
   Printer,
+  BedDouble,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { downloadCsv, printHtml, REPORT_PRINT_CSS } from "@/lib/report-export";
@@ -249,11 +250,45 @@ export const DailyReport = () => {
   const SECTION_TITLE: Record<string, string> = {
     restaurant: "Main Kitchen (Restaurant)",
     bar: "Main Bar (Wines & Spirits)",
-    rooms: "Rooms",
+    rooms: "Rooms (guest stays)",
   };
   // Human label + filename-safe token for the selected period.
   const rangeLabel = singleDay ? lo : `${lo} to ${hi}`;
   const rangeFile = singleDay ? lo : `${lo}_to_${hi}`;
+
+  // Room stays are sales with a product-less line (a description like
+  // "Room 104 · Single · 7 nights"). Aggregate them for the report + total.
+  const roomLines = useMemo(() => {
+    const m = new Map<string, { name: string; qty: number; amount: number }>();
+    for (const s of allDaySales) {
+      if (isCancelled(s)) continue;
+      for (const it of s.items) {
+        if (allProducts.find((x) => x.id === it.productId)) continue; // product line
+        const name = it.description ?? "Room stay";
+        const e = m.get(name) ?? { name, qty: 0, amount: 0 };
+        e.qty += it.quantity;
+        e.amount += it.amount;
+        m.set(name, e);
+      }
+    }
+    return [...m.values()].sort((a, b) => b.amount - a.amount);
+  }, [allDaySales, allProducts]);
+  const roomTotal = roomLines.reduce((a, i) => a + i.amount, 0);
+
+  // Quick date presets so picking a single day is one tap (Today / Yesterday),
+  // plus common ranges. Each just sets From + To.
+  const shiftDate = (iso: string, days: number) => {
+    const d = new Date(iso + "T00:00:00");
+    d.setDate(d.getDate() + days);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const t0 = todayISO();
+  const datePresets: { label: string; from: string; to: string }[] = [
+    { label: "Today", from: t0, to: t0 },
+    { label: "Yesterday", from: shiftDate(t0, -1), to: shiftDate(t0, -1) },
+    { label: "Last 7 days", from: shiftDate(t0, -6), to: t0 },
+    { label: "This month", from: t0.slice(0, 8) + "01", to: t0 },
+  ];
 
   const buildSections = () => {
     const sections = ACTIVE_DEPARTMENTS.map((dept) => {
@@ -275,8 +310,13 @@ export const DailyReport = () => {
       const total = items.reduce((a, i) => a + i.amount, 0);
       return { dept, items, total };
     });
-    const grand = sections.reduce((a, s) => a + s.total, 0);
-    return { sections, grand };
+    // Product-less sale lines are room stays — give them their own section so
+    // room income shows in the report and the GRAND TOTAL matches the header.
+    const allSections = roomLines.length
+      ? [...sections, { dept: "rooms" as const, items: roomLines, total: roomTotal }]
+      : sections;
+    const grand = allSections.reduce((a, s) => a + s.total, 0);
+    return { sections: allSections, grand };
   };
 
   const qn = (n: number) => Number(n.toFixed(3)); // tidy quantity number
@@ -355,6 +395,23 @@ export const DailyReport = () => {
             </p>
           </div>
           <div className="flex flex-wrap items-end gap-2">
+            <div className="flex flex-wrap gap-1 items-end pb-0.5 w-full sm:w-auto">
+              {datePresets.map((p) => {
+                const on = from === p.from && to === p.to;
+                return (
+                  <Button
+                    key={p.label}
+                    type="button"
+                    size="sm"
+                    variant={on ? "default" : "outline"}
+                    className="h-8"
+                    onClick={() => { setFrom(p.from); setTo(p.to); }}
+                  >
+                    {p.label}
+                  </Button>
+                );
+              })}
+            </div>
             <div className="space-y-1">
               <Label className="text-xs">From</Label>
               <Input
@@ -590,6 +647,45 @@ export const DailyReport = () => {
               </p>
             </div>
           )}
+        </Card>
+      )}
+
+      {/* Room stays — guest bookings billed in this range (own money line). */}
+      {roomLines.length > 0 && (
+        <Card className="overflow-hidden shadow-soft">
+          <div className="p-4 border-b bg-gradient-surface flex items-center gap-2">
+            <BedDouble className="h-4 w-4 text-primary" />
+            <div>
+              <h3 className="font-semibold">Rooms (guest stays)</h3>
+              <p className="text-xs text-muted-foreground">Room income for this period</p>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-secondary/60 text-secondary-foreground">
+                <tr>
+                  <th className="text-left p-3 font-semibold">Stay</th>
+                  <th className="text-right p-3 font-semibold">Count</th>
+                  <th className="text-right p-3 font-semibold">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {roomLines.map((r, i) => (
+                  <tr key={i} className="border-t hover:bg-muted/40">
+                    <td className="p-3 font-medium">{r.name}</td>
+                    <td className="p-3 text-right tabular-nums">{Number(r.qty.toFixed(2))}</td>
+                    <td className="p-3 text-right tabular-nums font-bold text-primary">{ksh(r.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 bg-gradient-surface font-bold">
+                  <td className="p-3" colSpan={2}>Rooms total</td>
+                  <td className="p-3 text-right tabular-nums text-primary">{ksh(roomTotal)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </Card>
       )}
 

@@ -38,7 +38,7 @@ const PRODUCT_COLS =
   "id, name, type, price, unit, category, food_group, department, track_stock, container_ml, cost_price, created_at";
 const SALE_COLS =
   "id, receipt_no, date, payment, payments, subtotal, cash_given, change_amount, mpesa_ref, customer_name, customer_phone, customer_id, paid, created_by, shift_id, cancel_state, cancel_reason, created_at";
-const SALE_ITEM_COLS = "product_id, quantity, unit_price, amount, serving_name, serving_ml";
+const SALE_ITEM_COLS = "product_id, quantity, unit_price, amount, serving_name, serving_ml, description";
 
 // Reads the active session from localStorage. Keep this in sync with
 // AuthContext.SESSION_KEY so the data layer and auth layer agree.
@@ -127,6 +127,7 @@ function mapSale(row: Record<string, unknown>): Sale {
     amount: Number(i.amount),
     servingName: (i.serving_name as string | null) ?? null,
     servingMl: i.serving_ml != null ? Number(i.serving_ml) : null,
+    description: (i.description as string | null) ?? null,
   }));
   return {
     id: row.id as string,
@@ -1268,6 +1269,466 @@ export function usePendingCancellations() {
   }, [qc, orgId, branchId]);
 
   return { pending };
+}
+
+// ── Rooms module (hotel) ──────────────────────────────────────────────────────
+// The room manager configures room types + prices themselves; guest details are
+// deliberately mostly optional. Backed by migration 010 (room_types/rooms/bookings).
+
+export interface RoomType {
+  id: string;
+  name: string;
+  pricePerNight: number;
+  capacity: number;
+  description: string | null;
+  active: boolean;
+}
+export interface Room {
+  id: string;
+  roomNo: string;
+  roomTypeId: string | null;
+  status: "available" | "occupied" | "maintenance";
+  note: string | null;
+  typeName: string | null;
+  pricePerNight: number | null;
+}
+export interface Booking {
+  id: string;
+  roomId: string | null;
+  roomNo: string | null;
+  guestName: string;
+  guestPhone: string | null;
+  guestIdNo: string | null;
+  checkIn: string;
+  checkOut: string | null;
+  nights: number | null;
+  rate: number;
+  amount: number;
+  payment: string | null;
+  paid: boolean;
+  status: "booked" | "checked_in" | "checked_out" | "cancelled";
+  note: string | null;
+  createdAt: string;
+  saleId: string | null;
+}
+
+function useRoomsRealtime(table: string, key: unknown[]) {
+  const qc = useQueryClient();
+  const branchId = getBranchId();
+  const chId = useRef(`${table}-${Math.random().toString(36).slice(2)}`);
+  useEffect(() => {
+    if (!branchId) return;
+    const channel = supabase
+      .channel(chId.current)
+      .on("postgres_changes", { event: "*", schema: "public", table, filter: `branch_id=eq.${branchId}` },
+        () => qc.invalidateQueries({ queryKey: key }))
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId]);
+}
+
+export function useRoomTypes() {
+  const qc = useQueryClient();
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const key = ["room_types", orgId, branchId];
+  useRoomsRealtime("room_types", key);
+
+  const { data: types = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<RoomType[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("room_types")
+        .select("id, name, price_per_night, capacity, description, active")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("name");
+      if (error) throw error;
+      return (data ?? []).map((r) => ({
+        id: r.id as string,
+        name: r.name as string,
+        pricePerNight: Number(r.price_per_night),
+        capacity: Number(r.capacity),
+        description: (r.description as string | null) ?? null,
+        active: (r.active as boolean) ?? true,
+      }));
+    },
+    staleTime: 30_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  const add = useMutation({
+    mutationFn: async (t: { name: string; pricePerNight: number; capacity: number; description?: string }) => {
+      const { error } = await supabase.from("room_types").insert({
+        org_id: orgId, branch_id: branchId, name: t.name,
+        price_per_night: t.pricePerNight, capacity: t.capacity, description: t.description ?? null,
+      } as never);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+  const remove = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("room_types").delete().eq("id", id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  return {
+    types,
+    addType: (t: { name: string; pricePerNight: number; capacity: number; description?: string }) => add.mutateAsync(t),
+    removeType: (id: string) => remove.mutateAsync(id),
+  };
+}
+
+export function useRooms() {
+  const qc = useQueryClient();
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const key = ["rooms", orgId, branchId];
+  useRoomsRealtime("rooms", key);
+
+  const { data: rooms = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<Room[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("rooms")
+        .select("id, room_no, room_type_id, status, note, room_types(name, price_per_night)")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("room_no");
+      if (error) throw error;
+      return (data ?? []).map((r) => {
+        const t = r.room_types as { name?: string; price_per_night?: number } | null;
+        return {
+          id: r.id as string,
+          roomNo: r.room_no as string,
+          roomTypeId: (r.room_type_id as string | null) ?? null,
+          status: r.status as Room["status"],
+          note: (r.note as string | null) ?? null,
+          typeName: t?.name ?? null,
+          pricePerNight: t?.price_per_night != null ? Number(t.price_per_night) : null,
+        };
+      });
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  const add = useMutation({
+    mutationFn: async (r: { roomNo: string; roomTypeId: string | null }) => {
+      const { error } = await supabase.from("rooms").insert({
+        org_id: orgId, branch_id: branchId, room_no: r.roomNo, room_type_id: r.roomTypeId,
+      } as never);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+  const remove = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("rooms").delete().eq("id", id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+  const setStatus = useMutation({
+    mutationFn: async (p: { id: string; status: Room["status"] }) => {
+      const { error } = await supabase.from("rooms").update({ status: p.status } as never).eq("id", p.id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  return {
+    rooms,
+    addRoom: (r: { roomNo: string; roomTypeId: string | null }) => add.mutateAsync(r),
+    removeRoom: (id: string) => remove.mutateAsync(id),
+    setRoomStatus: (id: string, status: Room["status"]) => setStatus.mutateAsync({ id, status }),
+  };
+}
+
+function mapBooking(r: Record<string, unknown>): Booking {
+  const room = r.rooms as { room_no?: string } | null;
+  return {
+    id: r.id as string,
+    roomId: (r.room_id as string | null) ?? null,
+    roomNo: room?.room_no ?? null,
+    guestName: r.guest_name as string,
+    guestPhone: (r.guest_phone as string | null) ?? null,
+    guestIdNo: (r.guest_id_no as string | null) ?? null,
+    checkIn: r.check_in as string,
+    checkOut: (r.check_out as string | null) ?? null,
+    nights: r.nights != null ? Number(r.nights) : null,
+    rate: Number(r.rate ?? 0),
+    amount: Number(r.amount ?? 0),
+    payment: (r.payment as string | null) ?? null,
+    paid: (r.paid as boolean) ?? false,
+    status: r.status as Booking["status"],
+    note: (r.note as string | null) ?? null,
+    createdAt: r.created_at as string,
+    saleId: (r.sale_id as string | null) ?? null,
+  };
+}
+
+export function useBookings() {
+  const qc = useQueryClient();
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const profileId = getProfileId();
+  const key = ["bookings", orgId, branchId];
+  useRoomsRealtime("bookings", key);
+
+  const { data: bookings = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<Booking[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("bookings")
+        .select("id, room_id, guest_name, guest_phone, guest_id_no, check_in, check_out, nights, rate, amount, payment, paid, status, note, created_at, sale_id, rooms(room_no)")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map((r) => mapBooking(r as Record<string, unknown>));
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  const checkIn = useMutation({
+    mutationFn: async (b: {
+      roomId: string | null; guestName: string; guestPhone?: string; guestIdNo?: string;
+      rate: number; nights?: number; amount: number; payment?: string; paid?: boolean; note?: string;
+    }): Promise<string> => {
+      const { data, error } = await supabase.from("bookings").insert({
+        org_id: orgId, branch_id: branchId, room_id: b.roomId, guest_name: b.guestName,
+        guest_phone: b.guestPhone ?? null, guest_id_no: b.guestIdNo ?? null,
+        rate: b.rate, nights: b.nights ?? null, amount: b.amount, payment: b.payment ?? null,
+        paid: b.paid ?? false, note: b.note ?? null, status: "checked_in", created_by: profileId,
+      } as never).select("id").single();
+      if (error) throw new Error(error.message);
+      return (data as { id: string }).id;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  // Turn a booking into a real SALE (receipt + counts in every report). Returns
+  // the full sale (with the room line) so the desk can print the receipt.
+  const payBooking = useMutation({
+    mutationFn: async (p: {
+      bookingId: string; payment: string; paid?: boolean; cashGiven?: number; change?: number; mpesaRef?: string;
+    }): Promise<Sale> => {
+      const { data, error } = await supabase.rpc("create_room_sale", {
+        p_booking_id: p.bookingId,
+        p_payment: p.payment,
+        p_paid: p.paid ?? true,
+        p_cash_given: p.cashGiven ?? null,
+        p_change: p.change ?? null,
+        p_mpesa_ref: p.mpesaRef ?? null,
+      });
+      if (error) throw new Error(error.message);
+      const saleId = (data as { id: string }).id;
+      const { data: full, error: e2 } = await supabase
+        .from("sales")
+        .select(`${SALE_COLS}, sale_items(${SALE_ITEM_COLS})`)
+        .eq("id", saleId).single();
+      if (e2) throw new Error(e2.message);
+      return mapSale(full as Record<string, unknown>);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: key });
+      qc.invalidateQueries({ queryKey: ["sales", orgId, branchId] });
+    },
+  });
+  const checkOut = useMutation({
+    mutationFn: async (p: { id: string; amount?: number; nights?: number; paid?: boolean }) => {
+      const patch: Record<string, unknown> = {
+        status: "checked_out",
+        check_out: new Date().toISOString().slice(0, 10),
+      };
+      if (p.amount != null) patch.amount = p.amount;
+      if (p.nights != null) patch.nights = p.nights;
+      if (p.paid != null) patch.paid = p.paid;
+      const { error } = await supabase.from("bookings").update(patch as never).eq("id", p.id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+  const cancel = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("bookings").update({ status: "cancelled" } as never).eq("id", id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  // Correct a mistake: change nights/amount; if already billed, re-price its sale.
+  const edit = useMutation({
+    mutationFn: async (p: { bookingId: string; nights: number | null; amount: number }) => {
+      const { error } = await supabase.rpc("edit_room_booking", {
+        p_booking_id: p.bookingId, p_nights: p.nights, p_amount: p.amount,
+      });
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: key });
+      qc.invalidateQueries({ queryKey: ["sales", orgId, branchId] });
+    },
+  });
+
+  // Fetch a booking's sale (with its room line) so the desk can re-print it.
+  const getSale = async (saleId: string): Promise<Sale> => {
+    const { data, error } = await supabase
+      .from("sales")
+      .select(`${SALE_COLS}, sale_items(${SALE_ITEM_COLS})`)
+      .eq("id", saleId).single();
+    if (error) throw new Error(error.message);
+    return mapSale(data as Record<string, unknown>);
+  };
+
+  return {
+    bookings,
+    checkIn: (b: Parameters<typeof checkIn.mutateAsync>[0]) => checkIn.mutateAsync(b),
+    payBooking: (p: Parameters<typeof payBooking.mutateAsync>[0]) => payBooking.mutateAsync(p),
+    checkOut: (p: { id: string; amount?: number; nights?: number; paid?: boolean }) => checkOut.mutateAsync(p),
+    editBooking: (p: Parameters<typeof edit.mutateAsync>[0]) => edit.mutateAsync(p),
+    getSale,
+    cancelBooking: (id: string) => cancel.mutateAsync(id),
+  };
+}
+
+// ── Resources (housekeeping supplies + kitchen equipment) ─────────────────────
+// Things the hotel owns but never sells. Current count = SUM of movements;
+// every +Received / −Issued / −Lost is logged for accountability. Migration 011.
+export interface ResourceItem {
+  id: string;
+  name: string;
+  category: string;
+  unit: string;
+  qtyOnHand: number;
+}
+export interface ResourceMovementRow {
+  id: string;
+  resourceId: string;
+  resourceName: string;
+  unit: string;
+  deltaQty: number;
+  reason: "opening" | "received" | "issued" | "waste" | "adjustment";
+  note: string | null;
+  occurredAt: string;
+}
+
+export function useResources() {
+  const qc = useQueryClient();
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const profileId = getProfileId();
+  const key = ["resources_on_hand", orgId, branchId];
+  useRoomsRealtime("resource_movements", key);
+  useRoomsRealtime("resources", key);
+
+  const { data: items = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<ResourceItem[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("v_resources_on_hand")
+        .select("resource_id, name, category, unit, qty_on_hand")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("name");
+      if (error) throw error;
+      return (data ?? []).map((r) => ({
+        id: r.resource_id as string,
+        name: r.name as string,
+        category: r.category as string,
+        unit: r.unit as string,
+        qtyOnHand: Number(r.qty_on_hand),
+      }));
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  const addItem = useMutation({
+    mutationFn: async (r: { name: string; category: string; unit: string; opening?: number; note?: string }) => {
+      const { data, error } = await supabase
+        .from("resources")
+        .insert({ org_id: orgId, branch_id: branchId, name: r.name, category: r.category, unit: r.unit, note: r.note ?? null } as never)
+        .select("id").single();
+      if (error) throw new Error(error.message);
+      const id = (data as { id: string }).id;
+      if (r.opening && r.opening > 0) {
+        const { error: e2 } = await supabase.from("resource_movements").insert({
+          org_id: orgId, branch_id: branchId, resource_id: id, delta_qty: r.opening, reason: "opening", created_by: profileId,
+        } as never);
+        if (e2) throw new Error(e2.message);
+      }
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  const record = useMutation({
+    mutationFn: async (m: { resourceId: string; delta: number; reason: ResourceMovementRow["reason"]; note?: string }) => {
+      const { error } = await supabase.from("resource_movements").insert({
+        org_id: orgId, branch_id: branchId, resource_id: m.resourceId, delta_qty: m.delta, reason: m.reason, note: m.note ?? null, created_by: profileId,
+      } as never);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  const removeItem = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("resources").delete().eq("id", id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  return {
+    items,
+    addItem: (r: { name: string; category: string; unit: string; opening?: number; note?: string }) => addItem.mutateAsync(r),
+    record: (m: { resourceId: string; delta: number; reason: ResourceMovementRow["reason"]; note?: string }) => record.mutateAsync(m),
+    removeItem: (id: string) => removeItem.mutateAsync(id),
+  };
+}
+
+export function useResourceMovements(limit = 100) {
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const key = ["resource_movements_log", orgId, branchId, limit];
+  useRoomsRealtime("resource_movements", key);
+
+  const { data: rows = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<ResourceMovementRow[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("resource_movements")
+        .select("id, resource_id, delta_qty, reason, note, occurred_at, resources(name, unit)")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("occurred_at", { ascending: false })
+        .limit(limit);
+      if (error) throw error;
+      return (data ?? []).map((r) => {
+        const res = r.resources as { name?: string; unit?: string } | null;
+        return {
+          id: r.id as string,
+          resourceId: r.resource_id as string,
+          resourceName: res?.name ?? "(deleted)",
+          unit: res?.unit ?? "",
+          deltaQty: Number(r.delta_qty),
+          reason: r.reason as ResourceMovementRow["reason"],
+          note: (r.note as string | null) ?? null,
+          occurredAt: r.occurred_at as string,
+        };
+      });
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+  return { rows };
 }
 
 // ── useStockOnHand ────────────────────────────────────────────────────────────

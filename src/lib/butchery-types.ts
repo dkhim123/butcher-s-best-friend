@@ -135,6 +135,8 @@ export interface SaleItem {
   // deduct the right fraction of a bottle; servingName prints on the receipt.
   servingName?: string | null;
   servingMl?: number | null;
+  /** Label for a line with no product (e.g. a room stay). */
+  description?: string | null;
 }
 
 export interface Sale {

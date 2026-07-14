@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 );
 ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_role_check;
 ALTER TABLE public.profiles ADD CONSTRAINT profiles_role_check
-  CHECK (role IN ('super_admin','admin','manager','cashier','pending'));
+  CHECK (role IN ('super_admin','admin','manager','cashier','room_manager','pending'));
 
 -- 1.4 Products — the catalogue (shared across branches)
 CREATE TABLE IF NOT EXISTS public.products (
@@ -233,7 +233,8 @@ CREATE TABLE IF NOT EXISTS public.sale_items (
   unit_price   NUMERIC(12,2) NOT NULL CHECK (unit_price >= 0),
   amount       NUMERIC(12,2) NOT NULL CHECK (amount >= 0),
   serving_name TEXT,
-  serving_ml   NUMERIC(10,2) CHECK (serving_ml IS NULL OR serving_ml > 0)
+  serving_ml   NUMERIC(10,2) CHECK (serving_ml IS NULL OR serving_ml > 0),
+  description  TEXT   -- label for a line with no product (e.g. a room stay)
 );
 ALTER TABLE public.sale_items ADD COLUMN IF NOT EXISTS serving_name TEXT;
 ALTER TABLE public.sale_items ADD COLUMN IF NOT EXISTS serving_ml   NUMERIC(10,2);
@@ -641,11 +642,11 @@ BEGIN
     RAISE EXCEPTION 'Invalid email address' USING ERRCODE = '22023'; END IF;
   IF length(p_password) < 8 THEN RAISE EXCEPTION 'Password must be at least 8 characters' USING ERRCODE = '22023'; END IF;
   IF length(trim(p_full_name)) = 0 THEN RAISE EXCEPTION 'Full name is required' USING ERRCODE = '22023'; END IF;
-  IF p_role NOT IN ('admin','manager','cashier','pending') THEN RAISE EXCEPTION 'Invalid role' USING ERRCODE = '22023'; END IF;
+  IF p_role NOT IN ('admin','manager','cashier','room_manager','pending') THEN RAISE EXCEPTION 'Invalid role' USING ERRCODE = '22023'; END IF;
   IF p_org_id IS NULL OR NOT EXISTS (SELECT 1 FROM public.organisations WHERE id = p_org_id) THEN
     RAISE EXCEPTION 'Organisation not found' USING ERRCODE = '23503'; END IF;
-  IF p_role IN ('cashier','manager') AND p_branch_id IS NULL THEN
-    RAISE EXCEPTION 'Cashiers and managers must be assigned to a branch' USING ERRCODE = '22023'; END IF;
+  IF p_role IN ('cashier','manager','room_manager') AND p_branch_id IS NULL THEN
+    RAISE EXCEPTION 'Cashiers, managers and room managers must be assigned to a branch' USING ERRCODE = '22023'; END IF;
   IF p_branch_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.branches WHERE id = p_branch_id AND org_id = p_org_id) THEN
     RAISE EXCEPTION 'Branch not found for this organisation' USING ERRCODE = '23503'; END IF;
   IF EXISTS (SELECT 1 FROM public.profiles WHERE email = v_email) THEN

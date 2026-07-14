@@ -82,20 +82,22 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
           </div>
           {sale.items.map((it, i) => {
             const p = productOf(it.productId);
-            const unitLabel = it.servingName ?? p?.unit ?? "u";
+            // A product line shows the product name (+ pour); a product-less line
+            // (e.g. a room stay) shows its description instead.
+            const name = p?.name ?? it.description ?? "Item";
+            const unitLabel = it.servingName ?? p?.unit ?? "";
             return (
               <div key={i} className="rcpt-line">
                 <div className="rcpt-line-main">
                   <span className="rcpt-line-name">
-                    {p?.name ?? "—"}
-                    {it.servingName ? ` (${it.servingName})` : ""}
+                    {name}
+                    {p && it.servingName ? ` (${it.servingName})` : ""}
                   </span>
                   <span className="rcpt-line-amt">{num(it.amount)}</span>
                 </div>
                 <div className="rcpt-line-sub">
-                  {qty(it.quantity, it.servingName ?? p?.unit ?? "")} × {num(it.unitPrice)}
-                  {" / "}
-                  {unitLabel}
+                  {qty(it.quantity, unitLabel)} × {num(it.unitPrice)}
+                  {unitLabel ? ` / ${unitLabel}` : ""}
                 </div>
               </div>
             );
