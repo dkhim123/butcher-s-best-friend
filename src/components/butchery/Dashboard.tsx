@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   ShoppingCart,
   Boxes,
@@ -12,11 +13,19 @@ import {
   CreditCard,
   ArrowRight,
   ChevronRight,
+  Ban,
 } from "lucide-react";
-import { useOrgUsers, useProducts, useSales, useShiftWindow } from "@/lib/butchery-store";
+import {
+  useOrgUsers,
+  usePendingCancellations,
+  useProducts,
+  useSales,
+  useShiftWindow,
+} from "@/lib/butchery-store";
 import { Sale, isCancelled, todayISO } from "@/lib/butchery-types";
 import { useAuth } from "@/contexts/AuthContext";
 import { ksh } from "@/lib/format";
+import { toast } from "sonner";
 import { ReceiptDialog } from "./ReceiptDialog";
 
 /**
@@ -49,13 +58,38 @@ function payBreakdown(sales: Sale[]) {
 }
 
 export const Dashboard = ({ onNavigate }: { onNavigate: (tab: string) => void }) => {
-  const { profile, org } = useAuth();
+  const { profile, org, role } = useAuth();
   const { products } = useProducts();
   const { nameById } = useOrgUsers();
-  const { sales } = useSales(todayISO());
+  const { sales, approveCancel, rejectCancel } = useSales(todayISO());
   const { shiftStart } = useShiftWindow();
+  const { pending } = usePendingCancellations();
   // The receipt currently opened from the recent list (to see what was sold).
   const [selected, setSelected] = useState<Sale | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const doApprove = async (id: string) => {
+    setBusyId(id);
+    try {
+      await approveCancel(id);
+      toast.success("Sale cancelled — stock returned");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't cancel");
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const doReject = async (id: string) => {
+    setBusyId(id);
+    try {
+      await rejectCancel(id);
+      toast.success("Cancellation rejected");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't reject");
+    } finally {
+      setBusyId(null);
+    }
+  };
   // Show totals since the shift started (anchor A) by default; the owner can
   // flip to the whole calendar day. If no shift is open, we only have "Today".
   const [period, setPeriod] = useState<"shift" | "today">("shift");
@@ -145,6 +179,57 @@ export const Dashboard = ({ onNavigate }: { onNavigate: (tab: string) => void })
           </div>
         )}
       </div>
+
+      {/* Cancellation requests — red alert; only an admin can approve/reject. */}
+      {pending.length > 0 && (
+        <Card className="overflow-hidden border-destructive/50 bg-destructive/5 shadow-soft">
+          <div className="p-4 border-b border-destructive/20 flex items-center gap-2">
+            <Ban className="h-4 w-4 text-destructive" />
+            <h3 className="font-semibold text-destructive">
+              Cancellation request{pending.length === 1 ? "" : "s"} ({pending.length})
+            </h3>
+          </div>
+          <div className="divide-y divide-destructive/10">
+            {pending.map((s) => (
+              <div key={s.id} className="p-3 flex flex-wrap items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-sm font-medium">
+                    {s.receiptNo} · {ksh(s.subtotal)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Requested by {nameById(s.createdBy) || "cashier"}
+                    {s.cancelReason ? ` · “${s.cancelReason}”` : ""}
+                  </p>
+                </div>
+                {role === "admin" ? (
+                  <div className="flex gap-2 shrink-0">
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={busyId === s.id}
+                      onClick={() => doApprove(s.id)}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busyId === s.id}
+                      onClick={() => doReject(s.id)}
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                ) : (
+                  <Badge variant="secondary" className="shrink-0">
+                    Awaiting admin
+                  </Badge>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Coloured shortcuts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

@@ -19,9 +19,11 @@ interface Props {
   mpesaPaybill?: string | null;
   mpesaPaybillAccount?: string | null;
   mpesaTill?: string | null;
+  /** Optional action row shown under the receipt (e.g. Cancel / Request cancel). */
+  footer?: React.ReactNode;
 }
 
-export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopName, logoUrl, tagline, phone, mpesaPaybill, mpesaPaybillAccount, mpesaTill }: Props) => {
+export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopName, logoUrl, tagline, phone, mpesaPaybill, mpesaPaybillAccount, mpesaTill, footer }: Props) => {
   const ref = useRef<HTMLDivElement>(null);
   const [printedFor, setPrintedFor] = useState<string | null>(null);
 
@@ -141,6 +143,7 @@ export const ReceiptDialog = ({ sale, products, open, onClose, autoPrint, shopNa
         <div className="bg-muted/40 py-4 max-h-[70vh] overflow-auto">
           {sale && <Receipt ref={ref} sale={sale} products={products} shopName={shopName} logoUrl={logoUrl} tagline={tagline} phone={phone} mpesaPaybill={mpesaPaybill} mpesaPaybillAccount={mpesaPaybillAccount} mpesaTill={mpesaTill} />}
         </div>
+        {footer && <div className="p-3 border-t bg-card">{footer}</div>}
       </DialogContent>
     </Dialog>
   );

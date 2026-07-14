@@ -1226,6 +1226,50 @@ export function useShiftWindow() {
   return { shiftStart, openShifts };
 }
 
+// ── usePendingCancellations ───────────────────────────────────────────────────
+// Sales a cashier/manager has REQUESTED to cancel, still awaiting an admin's
+// decision. Powers the admin's dashboard alert + the installed-app red badge.
+// Realtime so the badge/panel update the moment a request comes in.
+export function usePendingCancellations() {
+  const qc = useQueryClient();
+  const chId = useRef(`pending_cancels-${Math.random().toString(36).slice(2)}`);
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+
+  const { data: pending = [] } = useQuery({
+    queryKey: ["pending_cancels", orgId, branchId],
+    queryFn: async (): Promise<Sale[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("sales")
+        .select(`${SALE_COLS}, sale_items(${SALE_ITEM_COLS})`)
+        .eq("org_id", orgId)
+        .eq("branch_id", branchId)
+        .eq("cancel_state", "requested")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map((r) => mapSale(r as Record<string, unknown>));
+    },
+    staleTime: 10_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  useEffect(() => {
+    if (!orgId || !branchId) return;
+    const channel = supabase
+      .channel(chId.current)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "sales", filter: `branch_id=eq.${branchId}` },
+        () => qc.invalidateQueries({ queryKey: ["pending_cancels", orgId, branchId] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc, orgId, branchId]);
+
+  return { pending };
+}
+
 // ── useStockOnHand ────────────────────────────────────────────────────────────
 // Live view: current stock per tracked product at the current branch.
 // Backed by the v_stock_on_hand view (SUM of stock_movements).

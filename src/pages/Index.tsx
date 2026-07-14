@@ -12,6 +12,7 @@ import { UserManagement } from "@/components/butchery/UserManagement";
 import { MySalesReport } from "@/components/butchery/MySalesReport";
 import { Customers } from "@/components/butchery/Customers";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePendingCancellations } from "@/lib/butchery-store";
 import { DepartmentProvider } from "@/contexts/DepartmentContext";
 import { cn } from "@/lib/utils";
 import { Link } from "react-router-dom";
@@ -53,6 +54,19 @@ const Index = () => {
   const { role, hasPermission } = useAuth();
   const isAdmin = role === "admin";
   const isManagerOrAbove = role === "admin" || role === "manager";
+
+  // Pending cancellation requests → a red count badge on the installed app icon
+  // (admins only, since only an admin can act on them). Cleared when none remain.
+  const { pending } = usePendingCancellations();
+  const pendingCount = isAdmin ? pending.length : 0;
+  useEffect(() => {
+    const nav = navigator as Navigator & {
+      setAppBadge?: (n?: number) => Promise<void>;
+      clearAppBadge?: () => Promise<void>;
+    };
+    if (pendingCount > 0) nav.setAppBadge?.(pendingCount).catch(() => {});
+    else nav.clearAppBadge?.().catch(() => {});
+  }, [pendingCount]);
 
   // Inventory is shown if the user can see ANY of its sub-pages.
   // The Inventory wrapper itself does the per-sub-tab gating.

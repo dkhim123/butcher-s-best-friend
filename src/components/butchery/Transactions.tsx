@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Eye, Search, Check, Ban, X as XIcon } from "lucide-react";
+import { Search, Check, Ban } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -238,14 +238,14 @@ export const Transactions = () => {
                   <th className="text-left p-3 font-semibold">Items</th>
                   <th className="text-left p-3 font-semibold">Payment</th>
                   <th className="text-right p-3 font-semibold">Amount</th>
-                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((s) => (
                   <tr
                     key={s.id}
-                    className={`border-t hover:bg-muted/40 align-top ${
+                    onClick={() => setSelected(s)}
+                    className={`border-t hover:bg-muted/40 align-top cursor-pointer ${
                       isCancelled(s) ? "opacity-55" : ""
                     }`}
                   >
@@ -255,6 +255,16 @@ export const Transactions = () => {
                         <div className="text-[10px] text-muted-foreground font-sans mt-0.5">
                           by {nameById(s.createdBy)}
                         </div>
+                      )}
+                      {isCancelled(s) && (
+                        <Badge variant="destructive" className="mt-1 gap-1 text-[10px] font-sans">
+                          <Ban className="h-2.5 w-2.5" /> Cancelled
+                        </Badge>
+                      )}
+                      {s.cancelState === "requested" && (
+                        <Badge variant="secondary" className="mt-1 gap-1 text-[10px] font-sans">
+                          <Ban className="h-2.5 w-2.5" /> Cancel pending
+                        </Badge>
                       )}
                     </td>
                     <td className="p-3 text-xs">
@@ -305,75 +315,6 @@ export const Transactions = () => {
                     <td className="p-3 text-right font-bold text-primary tabular-nums">
                       {ksh(s.subtotal)}
                     </td>
-                    <td className="p-3 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-1 flex-wrap">
-                        <Button size="sm" variant="outline" onClick={() => setSelected(s)}>
-                          <Eye className="h-3.5 w-3.5 mr-1" /> View
-                        </Button>
-
-                        {s.payment === "credit" && !s.paid && !isCancelled(s) && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => markPaid(s.id)}
-                          >
-                            <Check className="h-3.5 w-3.5 mr-1" /> Paid
-                          </Button>
-                        )}
-
-                        {/* Cancellation controls depend on the sale's state + role. */}
-                        {isCancelled(s) ? (
-                          <Badge variant="destructive" className="gap-1">
-                            <Ban className="h-3 w-3" /> Cancelled
-                          </Badge>
-                        ) : s.cancelState === "requested" ? (
-                          isAdmin ? (
-                            <>
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                disabled={busyId === s.id}
-                                onClick={() => doApprove(s.id)}
-                                title={s.cancelReason ? `Reason: ${s.cancelReason}` : undefined}
-                              >
-                                <Ban className="h-3.5 w-3.5 mr-1" /> Approve cancel
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={busyId === s.id}
-                                onClick={() => doReject(s.id)}
-                              >
-                                <XIcon className="h-3.5 w-3.5 mr-1" /> Reject
-                              </Button>
-                            </>
-                          ) : (
-                            <Badge variant="secondary" className="gap-1">
-                              <Ban className="h-3 w-3" /> Cancel pending
-                            </Badge>
-                          )
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-destructive hover:text-destructive"
-                            disabled={busyId === s.id}
-                            onClick={() => {
-                              setCancelReason("");
-                              setCancelTarget(s);
-                            }}
-                          >
-                            <Ban className="h-3.5 w-3.5 mr-1" />
-                            {isAdmin ? "Cancel" : "Request cancel"}
-                          </Button>
-                        )}
-                      </div>
-                      {s.cancelState === "rejected" && (
-                        <p className="text-[10px] text-muted-foreground mt-1">
-                          Previous cancel request rejected
-                        </p>
-                      )}
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -400,7 +341,7 @@ export const Transactions = () => {
                 · {ksh(cancelTarget.subtotal)}.{" "}
                 {isAdmin
                   ? "The stock it sold will be returned to inventory and the money will stop counting."
-                  : "A manager will need to approve it before it takes effect."}
+                  : "An admin will need to approve it before it takes effect."}
               </p>
               <div className="space-y-1.5">
                 <Label className="text-xs">Reason {isAdmin ? "(optional)" : "(recommended)"}</Label>
@@ -445,6 +386,82 @@ export const Transactions = () => {
         mpesaPaybill={org?.mpesa_paybill}
         mpesaPaybillAccount={org?.mpesa_paybill_account}
         mpesaTill={org?.mpesa_till}
+        footer={(() => {
+          const s = selected;
+          if (!s) return null;
+          // Already void — nothing to do.
+          if (isCancelled(s)) {
+            return (
+              <p className="text-sm text-center text-muted-foreground">This sale is cancelled.</p>
+            );
+          }
+          // A cancellation was requested: an admin reviews it here; others wait.
+          if (s.cancelState === "requested") {
+            return isAdmin ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground mr-auto">
+                  {s.cancelReason ? `Reason: ${s.cancelReason}` : "Cancellation requested"}
+                </span>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={busyId === s.id}
+                  onClick={async () => {
+                    await doApprove(s.id);
+                    setSelected(null);
+                  }}
+                >
+                  <Ban className="h-3.5 w-3.5 mr-1" /> Approve cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busyId === s.id}
+                  onClick={async () => {
+                    await doReject(s.id);
+                    setSelected(null);
+                  }}
+                >
+                  Reject
+                </Button>
+              </div>
+            ) : (
+              <p className="text-sm text-center text-muted-foreground">
+                Cancellation requested — awaiting admin.
+              </p>
+            );
+          }
+          // Active sale: print (in the header) + cancel/request + mark-paid.
+          return (
+            <div className="flex flex-wrap justify-end gap-2">
+              {s.payment === "credit" && !s.paid && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    markPaid(s.id);
+                    setSelected(null);
+                  }}
+                >
+                  <Check className="h-3.5 w-3.5 mr-1" /> Mark paid
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-destructive hover:text-destructive"
+                onClick={() => {
+                  setSelected(null);
+                  setCancelReason("");
+                  setCancelTarget(s);
+                }}
+              >
+                <Ban className="h-3.5 w-3.5 mr-1" />
+                {isAdmin ? "Cancel transaction" : "Request cancel"}
+              </Button>
+            </div>
+          );
+        })()}
       />
     </div>
   );
