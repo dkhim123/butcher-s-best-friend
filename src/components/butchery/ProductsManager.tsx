@@ -42,6 +42,7 @@ import { toast } from "sonner";
  */
 type Kind =
   | "menu"
+  | "juice"
   | "ingredient_kg"
   | "ingredient_litre"
   | "ingredient_piece"
@@ -65,6 +66,17 @@ const KIND_META: Record<Kind, KindMeta> = {
     foodGroup: "prepared_food",
     trackStock: false,
     pricing: "per plate",
+  },
+  juice: {
+    // Bought by the litre, sold by the glass. One "litre" = one container;
+    // each glass (e.g. 300ml) deducts its fraction of a litre from stock,
+    // reusing the exact same container/serving machinery as bar spirits.
+    label: "Juice / soft drink (buy by litre, sell by glass)",
+    type: "fixed",
+    unit: "litre",
+    foodGroup: "drinks",
+    trackStock: true,
+    pricing: "per litre",
   },
   ingredient_kg: {
     label: "Ingredient — by kg",
@@ -110,7 +122,7 @@ const KIND_META: Record<Kind, KindMeta> = {
 
 // Which kinds appear for each department.
 const DEPARTMENT_KINDS: Record<Department, Kind[]> = {
-  restaurant: ["menu", "ingredient_kg", "ingredient_litre", "ingredient_piece"],
+  restaurant: ["menu", "juice", "ingredient_kg", "ingredient_litre", "ingredient_piece"],
   bar: ["beer", "spirit"],
   rooms: [],
 };
@@ -130,7 +142,11 @@ function deriveCategory(name: string): string {
 /** Map an existing Product's type back to a Kind (for the type badge). */
 function productToKind(p: Product): Kind {
   if (p.type === "meal" || p.foodGroup === "prepared_food") return "menu";
-  if (p.foodGroup === "drinks") return p.department === "bar" ? "spirit" : "beer";
+  if (p.foodGroup === "drinks") {
+    if (p.department === "bar") return "spirit";
+    // Restaurant drinks: a container (litre) → juice-by-glass, else whole bottle.
+    return p.containerMl != null ? "juice" : "beer";
+  }
   if (p.trackStock) {
     if (p.unit === "litre") return "ingredient_litre";
     if (p.unit === "piece") return "ingredient_piece";
@@ -281,6 +297,7 @@ export const ProductsManager = () => {
   };
 
   const isSpirit = newP.kind === "spirit";
+  const isJuice = newP.kind === "juice";
 
   // ── Bulk add ──────────────────────────────────────────────────────────────
   // Queue several products (e.g. a whole drinks list) then save them in one go.
@@ -317,6 +334,12 @@ export const ProductsManager = () => {
     if (spirit && (!Number.isFinite(d.containerMl) || d.containerMl <= 0)) {
       return { error: `"${d.name}": enter a valid bottle size in ml` };
     }
+    // Juice is bought by the litre → the "container" is always 1 litre (1000ml).
+    // Glasses (e.g. 300ml) are added afterwards in the Servings editor and each
+    // deducts its fraction of a litre. Spirits keep their chosen bottle size.
+    const juice = d.kind === "juice";
+    const usesContainer = spirit || juice;
+    const containerMl = juice ? 1000 : d.containerMl;
     const openingNum = Number(d.openingStock);
     const opening =
       dMeta.trackStock && Number.isFinite(openingNum) && openingNum > 0 ? openingNum : 0;
@@ -330,12 +353,12 @@ export const ProductsManager = () => {
         foodGroup: dMeta.foodGroup,
         department: d.department,
         trackStock: dMeta.trackStock,
-        containerMl: spirit ? d.containerMl : null,
+        containerMl: usesContainer ? containerMl : null,
         costPrice: costTrimmed ? costNum : null,
       },
       opening,
       spirit,
-      containerMl: d.containerMl,
+      containerMl,
     };
   };
 
@@ -522,7 +545,9 @@ export const ProductsManager = () => {
           {/* Selling price — hidden for ingredients (they're never sold). */}
           {!isIngredientKind && (
             <div className="space-y-1.5">
-              <Label>Selling price ({isSpirit ? "per full bottle" : meta.pricing})</Label>
+              <Label>
+                Selling price ({isSpirit ? "per full bottle" : isJuice ? "per full litre" : meta.pricing})
+              </Label>
               <Input
                 type="number"
                 inputMode="decimal"
@@ -554,6 +579,17 @@ export const ProductsManager = () => {
             />
           </div>
         </div>
+
+        {/* Juice/soft-drink helper: you buy litres, but you SELL glasses. Tell
+            the owner exactly what to do next so the glass sizes aren't missed. */}
+        {isJuice && (
+          <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-foreground/80">
+            You buy this by the <b>litre</b> (1 litre = 1 container). After adding
+            it, tap <b>“Servings”</b> on its card to set the glass sizes you sell —
+            e.g. <b>Glass · 300 ml · Ksh 50</b>. Each glass sold removes its share
+            of a litre from stock automatically.
+          </div>
+        )}
 
         {/* Opening stock only appears for meat & drinks.
             Meals and "other" don't track stock, so no field at all. */}
@@ -970,7 +1006,9 @@ export const ProductsManager = () => {
                                 <p className="text-xs font-medium mb-1.5">
                                   How <strong>{p.name}</strong> can be sold
                                   <span className="text-muted-foreground font-normal">
-                                    {" "}(bottle is {p.containerMl} ml
+                                    {" "}({productToKind(p) === "juice"
+                                      ? "1 litre"
+                                      : `bottle is ${p.containerMl} ml`}
                                     {p.costPrice != null && `, cost ${ksh(p.costPrice)}`})
                                   </span>
                                 </p>

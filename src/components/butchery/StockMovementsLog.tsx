@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useProducts, useStockMovements, StockMovementRow } from "@/lib/butchery-store";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
+import { Department, DEPARTMENT_SHORT_LABELS } from "@/lib/butchery-types";
 import { qty } from "@/lib/format";
 
 /**
@@ -53,30 +54,37 @@ const REASON_META: Record<
 };
 
 export const StockMovementsLog = () => {
-  const { active: activeDepartment } = useActiveDepartment();
+  const { allowed: allowedDepartments, canSwitch } = useActiveDepartment();
   const { products } = useProducts();
   const { rows, isLoading } = useStockMovements(300);
 
   const [search, setSearch] = useState("");
   const [reasonFilter, setReasonFilter] = useState<"all" | StockMovementRow["reason"]>("all");
+  // Department is now an OPTIONAL filter that defaults to "all". Previously the
+  // log was hard-scoped to the active department, so it looked empty whenever
+  // the stocked products lived in another department (e.g. all drinks are in the
+  // Bar, so the Restaurant view showed nothing even though the DB was full).
+  const [deptFilter, setDeptFilter] = useState<"all" | Department>("all");
 
-  // Only show movements for products in the department in focus.
-  const deptProductIds = useMemo(
-    () => new Set(products.filter((p) => p.department === activeDepartment).map((p) => p.id)),
-    [products, activeDepartment],
-  );
+  // productId → department, so we can filter movements by the chosen department
+  // without another query.
+  const productDept = useMemo(() => {
+    const m = new Map<string, Department>();
+    for (const p of products) m.set(p.id, p.department);
+    return m;
+  }, [products]);
 
   // In-memory filter. We don't filter in the DB because the result set
   // is small (capped at 300 rows) and client-side filtering is instant.
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     return rows.filter((r) => {
-      if (!deptProductIds.has(r.productId)) return false;
+      if (deptFilter !== "all" && productDept.get(r.productId) !== deptFilter) return false;
       if (reasonFilter !== "all" && r.reason !== reasonFilter) return false;
       if (term && !r.productName.toLowerCase().includes(term)) return false;
       return true;
     });
-  }, [rows, deptProductIds, reasonFilter, search]);
+  }, [rows, productDept, deptFilter, reasonFilter, search]);
 
   // Roll-up at the top: total in, total out, net for the visible rows.
   // This is a quick "where is my stock going?" sanity check.
@@ -117,6 +125,29 @@ export const StockMovementsLog = () => {
                 className="h-9 w-full sm:w-44"
               />
             </div>
+            {canSwitch && (
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Department
+                </label>
+                <Select
+                  value={deptFilter}
+                  onValueChange={(v) => setDeptFilter(v as "all" | Department)}
+                >
+                  <SelectTrigger className="h-9 w-full sm:w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All departments</SelectItem>
+                    {allowedDepartments.map((d) => (
+                      <SelectItem key={d} value={d}>
+                        {DEPARTMENT_SHORT_LABELS[d]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground">
                 Reason
@@ -187,15 +218,27 @@ export const StockMovementsLog = () => {
           </p>
         ) : filtered.length === 0 ? (
           <p className="p-8 text-sm text-muted-foreground text-center">
-            No stock movements match your filters.
-            {rows.length === 0 && (
+            {rows.length === 0 ? (
               <>
+                No stock movements yet.
                 <br />
                 <span className="text-xs">
                   Record a purchase or set opening stock on a product to see
                   movements here.
                 </span>
               </>
+            ) : deptFilter !== "all" ? (
+              <>
+                No movements in {DEPARTMENT_SHORT_LABELS[deptFilter]}.
+                <br />
+                <span className="text-xs">
+                  Only stock-tracked products move stock (drinks, meat). Meals
+                  aren't tracked. Set Department to “All departments” to see
+                  everything.
+                </span>
+              </>
+            ) : (
+              "No stock movements match your filters."
             )}
           </p>
         ) : (

@@ -57,6 +57,7 @@ import {
 } from "@/components/ui/dialog";
 import { ksh, qty } from "@/lib/format";
 import { toast } from "sonner";
+import { printOrderTickets, TicketGroup, TicketLine } from "@/lib/order-tickets";
 import { ReceiptDialog } from "./ReceiptDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
@@ -449,20 +450,58 @@ export const POS = () => {
     return true;
   };
 
+  // Split the current cart into per-station prep tickets: Restaurant items → the
+  // Chef's KITCHEN ticket, Bar items → the Barman's BAR ticket. Price-free — the
+  // kitchen only needs to know what to make; money is on the client's receipt.
+  const buildTicketGroups = (): TicketGroup[] => {
+    const STATION: Record<Department, { title: string; station: string }> = {
+      restaurant: { title: "KITCHEN", station: "Chef" },
+      bar: { title: "BAR", station: "Barman" },
+      rooms: { title: "ROOMS", station: "Front desk" },
+    };
+    const byDept = new Map<Department, TicketLine[]>();
+    for (const line of cart) {
+      const p = products.find((x) => x.id === line.productId);
+      if (!p) continue;
+      const arr = byDept.get(p.department) ?? [];
+      arr.push({ name: p.name, qty: line.quantity, serving: line.serving?.name ?? null });
+      byDept.set(p.department, arr);
+    }
+    return [...byDept.entries()].map(([dept, lines]) => ({
+      title: STATION[dept].title,
+      station: STATION[dept].station,
+      lines,
+    }));
+  };
+
   // Save the cart as a NEW open order, or append it to the one we're adding to.
   const handleSaveOrder = async () => {
     if (!validateCartForOrder()) return;
     setSavingOrder(true);
     try {
       const items = cartToOrderItems();
+      // Capture the tickets from the cart BEFORE it's cleared below.
+      const groups = buildTicketGroups();
+      let orderNo: number | string = "";
+      let roundLabel = "New order";
       if (addingToOrderId) {
         await addItems(addingToOrderId, items);
+        orderNo = orders.find((o) => o.id === addingToOrderId)?.orderNo ?? "";
+        roundLabel = "Added round";
         toast.success("Added to order");
         setAddingToOrderId(null);
       } else {
         const order = await createOrder(items, undefined, shift?.id ?? null);
-        toast.success(`Order #${(order as { order_no: number }).order_no} saved`);
+        orderNo = (order as { order_no: number }).order_no;
+        toast.success(`Order #${orderNo} saved`);
       }
+      // Fire the kitchen/bar prep tickets for exactly what was just ordered.
+      printOrderTickets({
+        orgName: org?.name ?? "Order",
+        orderNo,
+        roundLabel,
+        groups,
+      });
       setCart([]);
       setActiveKgLineId(null);
     } catch (err) {

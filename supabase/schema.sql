@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS public.sales (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id         UUID NOT NULL REFERENCES public.organisations(id) ON DELETE CASCADE,
   branch_id      UUID NOT NULL REFERENCES public.branches(id) ON DELETE CASCADE,
-  receipt_no     TEXT NOT NULL UNIQUE,
+  receipt_no     TEXT NOT NULL,  -- unique PER ORG (see index below), not globally
   date           DATE NOT NULL DEFAULT CURRENT_DATE,
   payment        TEXT NOT NULL CHECK (payment IN ('cash','mpesa','card','credit','split')),
   -- Split payments: [{"method":"cash","amount":500},{"method":"mpesa","amount":300,"ref":"..."}].
@@ -322,6 +322,11 @@ CREATE INDEX IF NOT EXISTS idx_po_branch_date    ON public.purchase_orders (bran
 CREATE INDEX IF NOT EXISTS idx_sales_branch_date ON public.sales           (branch_id, date);
 CREATE INDEX IF NOT EXISTS idx_sales_created_by  ON public.sales           (created_by);
 CREATE INDEX IF NOT EXISTS idx_sales_customer    ON public.sales           (customer_id);
+-- Receipt numbers are unique WITHIN an org (each org's counter starts at 1001),
+-- never globally. Drop any legacy global unique and enforce it per-org. See
+-- migration 007_receipt_no_unique_per_org.sql.
+ALTER TABLE public.sales DROP CONSTRAINT IF EXISTS sales_receipt_no_key;
+CREATE UNIQUE INDEX IF NOT EXISTS sales_org_receipt_no_key ON public.sales (org_id, receipt_no);
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale   ON public.sale_items      (sale_id);
 
 

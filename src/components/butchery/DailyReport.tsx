@@ -285,7 +285,7 @@ export const DailyReport = () => {
     downloadCsv(`sales_report_${rangeFile}.csv`, out);
   };
 
-  // ── Print the combined sales report (A4) ──
+  // ── Print the combined sales report (80mm thermal roll; also PDF) ──
   const handlePrint = () => {
     const esc = (s: string) =>
       s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] ?? c));

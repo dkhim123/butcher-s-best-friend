@@ -4,10 +4,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Wallet, ShoppingBag, Receipt as ReceiptIcon, Printer } from "lucide-react";
+import { Wallet, ShoppingBag, Receipt as ReceiptIcon, Printer, Download, UtensilsCrossed, Wine } from "lucide-react";
 import { useProducts, useSales } from "@/lib/butchery-store";
-import { Sale, isCancelled, todayISO } from "@/lib/butchery-types";
+import { ACTIVE_DEPARTMENTS, Department, Sale, isCancelled, todayISO } from "@/lib/butchery-types";
 import { useAuth } from "@/contexts/AuthContext";
+import { downloadCsv, printHtml, REPORT_PRINT_CSS } from "@/lib/report-export";
 import { ksh, qty } from "@/lib/format";
 import { ReceiptDialog } from "./ReceiptDialog";
 
@@ -15,7 +16,25 @@ import { ReceiptDialog } from "./ReceiptDialog";
  * MySalesReport — what THIS cashier sold: items, quantities, totals, AND a list
  * of their own receipts they can re-open and re-print at any time. Deliberately
  * simple: no stock levels, no other cashiers — that fuller view is admin-only.
+ *
+ * The "Items you sold" list is split into Restaurant and Bar sections (each with
+ * its own subtotal) plus a combined grand total, and the whole thing can be
+ * exported to CSV or printed on the 80mm thermal roll for record-keeping.
  */
+
+// Section headings, shared with the printed/exported copies so screen and paper
+// always read the same.
+const SECTION_TITLE: Record<Department, string> = {
+  restaurant: "Main Kitchen (Restaurant)",
+  bar: "Main Bar (Wines & Spirits)",
+  rooms: "Rooms",
+};
+const SECTION_ICON: Record<Department, typeof Wine> = {
+  restaurant: UtensilsCrossed,
+  bar: Wine,
+  rooms: Wine,
+};
+
 export const MySalesReport = () => {
   const { profile, org } = useAuth();
   const { products } = useProducts();
@@ -24,14 +43,12 @@ export const MySalesReport = () => {
   const [to, setTo] = useState<string>(todayISO());
   const lo = from <= to ? from : to;
   const hi = from <= to ? to : from;
+  const singleDay = lo === hi;
   // useSales() already scopes a cashier to their OWN sales at the query level.
   const { sales: everySale } = useSales();
 
   // Re-print state: the receipt currently open.
   const [selected, setSelected] = useState<Sale | null>(null);
-
-  const productName = (id: string) => products.find((p) => p.id === id)?.name ?? "—";
-  const productUnit = (id: string) => products.find((p) => p.id === id)?.unit ?? "";
 
   // My own, non-cancelled sales within the range (newest first).
   const mySales = useMemo(
@@ -48,24 +65,109 @@ export const MySalesReport = () => {
 
   const totalRevenue = mySales.reduce((a, s) => a + s.subtotal, 0);
 
-  // Aggregate items sold by product.
-  const rows = useMemo(() => {
-    const map = new Map<string, { qty: number; revenue: number; serving?: string }>();
-    for (const s of mySales) {
-      for (const i of s.items) {
-        const key = i.productId + (i.servingName ? `|${i.servingName}` : "");
-        const agg = map.get(key) ?? { qty: 0, revenue: 0, serving: i.servingName ?? undefined };
-        agg.qty += i.quantity;
-        agg.revenue += i.amount;
-        map.set(key, agg);
+  // ── Items sold, grouped into Restaurant + Bar sections ──────────────────────
+  // One section per active department; within it, items are aggregated by
+  // product (a bar pour like "Tot" is its own line). Each section carries its
+  // own subtotal; the grand total sums them.
+  const sections = useMemo(() => {
+    const secs = ACTIVE_DEPARTMENTS.map((dept) => {
+      const map = new Map<
+        string,
+        { name: string; serving?: string; unit: string; qty: number; amount: number }
+      >();
+      for (const s of mySales) {
+        for (const i of s.items) {
+          const p = products.find((x) => x.id === i.productId);
+          if (!p || p.department !== dept) continue;
+          const key = i.productId + (i.servingName ? `|${i.servingName}` : "");
+          const agg = map.get(key) ?? {
+            name: p.name,
+            serving: i.servingName ?? undefined,
+            unit: p.unit,
+            qty: 0,
+            amount: 0,
+          };
+          agg.qty += i.quantity;
+          agg.amount += i.amount;
+          map.set(key, agg);
+        }
       }
-    }
-    return Array.from(map.entries())
-      .map(([key, v]) => ({ productId: key.split("|")[0], ...v }))
-      .sort((a, b) => b.revenue - a.revenue);
-  }, [mySales]);
+      const items = [...map.values()].sort((a, b) => b.amount - a.amount);
+      const total = items.reduce((a, i) => a + i.amount, 0);
+      const count = items.reduce((a, i) => a + i.qty, 0);
+      return { dept, items, total, count };
+    });
+    const grand = secs.reduce((a, s) => a + s.total, 0);
+    const grandCount = secs.reduce((a, s) => a + s.count, 0);
+    return { secs, grand, grandCount };
+  }, [mySales, products]);
 
-  const totalItems = rows.reduce((a, r) => a + r.qty, 0);
+  // Human label + filename-safe token for the selected period.
+  const rangeLabel = singleDay ? lo : `${lo} to ${hi}`;
+  const rangeFile = singleDay ? lo : `${lo}_to_${hi}`;
+  const qn = (n: number) => Number(n.toFixed(3));
+
+  // ── Export as CSV ──
+  const handleExportCsv = () => {
+    const now = new Date().toLocaleString("en-KE");
+    const out: (string | number | null)[][] = [
+      [org?.name ?? "Business"],
+      ["My Sales Report"],
+      ["Cashier", profile?.full_name ?? ""],
+      [singleDay ? "Date" : "Period", rangeLabel],
+      ["Generated", now],
+      [],
+    ];
+    for (const sec of sections.secs) {
+      out.push([SECTION_TITLE[sec.dept]]);
+      out.push(["Item", "Quantity", "Amount"]);
+      for (const i of sec.items)
+        out.push([i.name + (i.serving ? ` (${i.serving})` : ""), qn(i.qty), Math.round(i.amount)]);
+      out.push([`${SECTION_TITLE[sec.dept].split(" (")[0]} total`, "", Math.round(sec.total)]);
+      out.push([]);
+    }
+    out.push(["GRAND TOTAL", "", Math.round(sections.grand)]);
+    downloadCsv(`my_sales_${rangeFile}.csv`, out);
+  };
+
+  // ── Print on the 80mm thermal roll (also "Save as PDF" → 80mm PDF) ──
+  const handlePrint = () => {
+    const esc = (s: string) =>
+      s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] ?? c));
+    const now = new Date().toLocaleString("en-KE");
+
+    let body =
+      `<h1>${esc(org?.name ?? "Business")}</h1>` +
+      `<p class="sub">My Sales &middot; ${esc(profile?.full_name ?? "")}<br>${esc(rangeLabel)}<br>Generated: ${esc(now)}</p>`;
+
+    for (const sec of sections.secs) {
+      body += `<h2>${esc(SECTION_TITLE[sec.dept])}</h2>`;
+      if (sec.items.length === 0) {
+        body += `<p class="empty">No sales for this period.</p>`;
+        continue;
+      }
+      body +=
+        `<table class="grid"><thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead><tbody>` +
+        sec.items
+          .map(
+            (i) =>
+              `<tr><td>${esc(i.name)}${i.serving ? ` (${esc(i.serving)})` : ""}</td><td class="num">${qn(
+                i.qty,
+              )}</td><td class="num">${ksh(i.amount)}</td></tr>`,
+          )
+          .join("") +
+        `</tbody><tfoot><tr><td>${esc(SECTION_TITLE[sec.dept].split(" (")[0])} total</td>` +
+        `<td></td><td class="num">${ksh(sec.total)}</td></tr></tfoot></table>`;
+    }
+
+    body +=
+      `<table class="grand"><tr><td>GRAND TOTAL</td><td class="num">${ksh(sections.grand)}</td></tr></table>` +
+      `<p class="foot">Printed ${esc(now)}</p>`;
+
+    printHtml(`My Sales ${rangeLabel}`, body, REPORT_PRINT_CSS);
+  };
+
+  const hasSales = mySales.length > 0;
 
   return (
     <div className="space-y-6">
@@ -100,6 +202,24 @@ export const MySalesReport = () => {
                 className="w-40"
               />
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 h-10"
+              onClick={handleExportCsv}
+              disabled={!hasSales}
+            >
+              <Download className="h-4 w-4" /> CSV
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 h-10"
+              onClick={handlePrint}
+              disabled={!hasSales}
+            >
+              <Printer className="h-4 w-4" /> Print
+            </Button>
           </div>
         </div>
       </Card>
@@ -118,7 +238,9 @@ export const MySalesReport = () => {
         </Card>
         <Card className="p-4 shadow-soft">
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Items sold</p>
-          <p className="text-2xl font-bold">{totalItems.toLocaleString("en-KE", { maximumFractionDigits: 2 })}</p>
+          <p className="text-2xl font-bold">
+            {sections.grandCount.toLocaleString("en-KE", { maximumFractionDigits: 2 })}
+          </p>
         </Card>
       </div>
 
@@ -200,52 +322,90 @@ export const MySalesReport = () => {
         )}
       </Card>
 
+      {/* Items you sold — split into Restaurant + Bar, then a combined total. */}
       <Card className="overflow-hidden shadow-elevated">
         <div className="p-4 border-b bg-gradient-surface">
           <h3 className="font-semibold flex items-center gap-2">
             <ReceiptIcon className="h-4 w-4 text-primary" /> Items you sold
           </h3>
+          <p className="text-xs text-muted-foreground">
+            Grouped by Restaurant and Bar, with a combined total.
+          </p>
         </div>
-        {rows.length === 0 ? (
+        {!hasSales ? (
           <p className="p-8 text-center text-sm text-muted-foreground">
             No sales recorded for this period.
           </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-secondary/60 text-secondary-foreground text-xs uppercase">
-                <tr>
-                  <th className="text-left p-3 font-semibold">Item</th>
-                  <th className="text-right p-3 font-semibold">Qty sold</th>
-                  <th className="text-right p-3 font-semibold">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className="border-t hover:bg-muted/40">
-                    <td className="p-3">
-                      <span className="font-medium">{productName(r.productId)}</span>
-                      {r.serving && (
-                        <Badge variant="secondary" className="ml-2 text-[10px]">{r.serving}</Badge>
-                      )}
-                    </td>
-                    <td className="p-3 text-right tabular-nums">
-                      {qty(r.qty, r.serving ?? productUnit(r.productId))}
-                    </td>
-                    <td className="p-3 text-right tabular-nums font-bold text-primary">
-                      {ksh(r.revenue)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 bg-gradient-surface font-bold">
-                  <td className="p-3">Total</td>
-                  <td className="p-3 text-right tabular-nums">{totalItems.toLocaleString("en-KE", { maximumFractionDigits: 2 })}</td>
-                  <td className="p-3 text-right tabular-nums text-primary">{ksh(totalRevenue)}</td>
-                </tr>
-              </tfoot>
-            </table>
+          <div className="divide-y">
+            {sections.secs.map((sec) => {
+              const Icon = SECTION_ICON[sec.dept];
+              return (
+                <div key={sec.dept}>
+                  <div className="flex items-center gap-2 px-4 pt-4 pb-2">
+                    <Icon className="h-4 w-4 text-primary" />
+                    <h4 className="font-semibold text-sm">{SECTION_TITLE[sec.dept]}</h4>
+                  </div>
+                  {sec.items.length === 0 ? (
+                    <p className="px-4 pb-4 text-sm text-muted-foreground">
+                      Nothing sold in this section.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-secondary/60 text-secondary-foreground text-xs uppercase">
+                          <tr>
+                            <th className="text-left p-3 font-semibold">Item</th>
+                            <th className="text-right p-3 font-semibold">Qty sold</th>
+                            <th className="text-right p-3 font-semibold">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sec.items.map((r, i) => (
+                            <tr key={i} className="border-t hover:bg-muted/40">
+                              <td className="p-3">
+                                <span className="font-medium">{r.name}</span>
+                                {r.serving && (
+                                  <Badge variant="secondary" className="ml-2 text-[10px]">
+                                    {r.serving}
+                                  </Badge>
+                                )}
+                              </td>
+                              <td className="p-3 text-right tabular-nums">
+                                {qty(r.qty, r.serving ?? r.unit)}
+                              </td>
+                              <td className="p-3 text-right tabular-nums font-bold text-primary">
+                                {ksh(r.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t bg-muted/40 font-semibold">
+                            <td className="p-3">
+                              {SECTION_TITLE[sec.dept].split(" (")[0]} total
+                            </td>
+                            <td className="p-3 text-right tabular-nums">
+                              {sec.count.toLocaleString("en-KE", { maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="p-3 text-right tabular-nums text-primary">
+                              {ksh(sec.total)}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {/* Combined grand total across both sections. */}
+            <div className="flex items-center justify-between px-4 py-4 bg-gradient-surface">
+              <span className="font-bold">Combined total</span>
+              <span className="font-bold text-lg text-primary tabular-nums">
+                {ksh(sections.grand)}
+              </span>
+            </div>
           </div>
         )}
       </Card>
