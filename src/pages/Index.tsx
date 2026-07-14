@@ -30,6 +30,8 @@ import {
   Menu,
   BedDouble,
   Boxes as BoxesIcon,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 
 // Tab IDs are kept in one place so the URL hash and the sidebar links
@@ -133,6 +135,16 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<TabId>(readTabFromHash);
   // Mobile: the sidebar slides in as a sheet; closed by default.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Desktop: collapse the sidebar to an icons-only rail (remembered).
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => typeof window !== "undefined" && localStorage.getItem("sidebar_collapsed") === "1",
+  );
+  const toggleCollapsed = () =>
+    setCollapsed((c) => {
+      const next = !c;
+      if (typeof window !== "undefined") localStorage.setItem("sidebar_collapsed", next ? "1" : "0");
+      return next;
+    });
 
   const handleTabChange = (value: string) => {
     const next = (allowedTabs.has(value as TabId) ? value : defaultTab) as TabId;
@@ -152,8 +164,9 @@ const Index = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allowedTabs]);
 
-  // The list of nav buttons, reused by the desktop sidebar and the mobile sheet.
-  const navList = (
+  // Nav buttons, reused by the desktop sidebar (collapsible) and the mobile
+  // sheet (always expanded). When collapsed we show icons only + a tooltip.
+  const buildNav = (isCollapsed: boolean) => (
     <nav className="space-y-1">
       {navItems.map((n) => {
         const Icon = n.icon;
@@ -164,30 +177,37 @@ const Index = () => {
             type="button"
             onClick={() => handleTabChange(n.id)}
             aria-current={on ? "page" : undefined}
+            title={isCollapsed ? n.label : undefined}
             className={cn(
-              "w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+              "w-full flex items-center gap-3 rounded-lg py-2.5 text-sm font-medium transition-colors",
+              isCollapsed ? "justify-center px-2" : "px-3",
               on
                 ? "bg-white/10 text-[hsl(45_90%_62%)] shadow-[inset_3px_0_0_hsl(45_92%_55%)]"
                 : "text-emerald-100/60 hover:bg-white/5 hover:text-white",
             )}
           >
             <Icon className="h-4 w-4 shrink-0" />
-            {n.label}
+            {!isCollapsed && n.label}
           </button>
         );
       })}
     </nav>
   );
 
-  const settingsLink = isAdmin && (
-    <Link
-      to="/settings"
-      className="mt-2 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-emerald-100/60 hover:bg-white/5 hover:text-white transition-colors"
-    >
-      <Settings className="h-4 w-4 shrink-0" />
-      Business Settings
-    </Link>
-  );
+  const buildSettings = (isCollapsed: boolean) =>
+    isAdmin && (
+      <Link
+        to="/settings"
+        title={isCollapsed ? "Business Settings" : undefined}
+        className={cn(
+          "mt-2 flex items-center gap-3 rounded-lg py-2.5 text-sm font-medium text-emerald-100/60 hover:bg-white/5 hover:text-white transition-colors",
+          isCollapsed ? "justify-center px-2" : "px-3",
+        )}
+      >
+        <Settings className="h-4 w-4 shrink-0" />
+        {!isCollapsed && "Business Settings"}
+      </Link>
+    );
 
   return (
     <DepartmentProvider>
@@ -207,11 +227,28 @@ const Index = () => {
         />
 
         <div className="flex flex-1 min-h-0">
-          {/* Desktop sidebar — dark green, the main way to move around the app. */}
-          <aside className="hidden lg:block w-60 shrink-0 bg-[hsl(150_32%_10%)] border-r border-white/5">
+          {/* Desktop sidebar — dark green; collapsible to an icons-only rail. */}
+          <aside
+            className={cn(
+              "hidden lg:block shrink-0 bg-[hsl(150_32%_10%)] border-r border-white/5 transition-[width] duration-200",
+              collapsed ? "w-16" : "w-60",
+            )}
+          >
             <div className="sticky top-[89px] p-3">
-              {navList}
-              {settingsLink}
+              <button
+                type="button"
+                onClick={toggleCollapsed}
+                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                title={collapsed ? "Expand" : "Collapse"}
+                className={cn(
+                  "mb-2 flex items-center w-full rounded-lg py-2 text-emerald-100/60 hover:bg-white/5 hover:text-white transition-colors",
+                  collapsed ? "justify-center px-2" : "justify-end px-3",
+                )}
+              >
+                {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+              </button>
+              {buildNav(collapsed)}
+              {buildSettings(collapsed)}
             </div>
           </aside>
 
@@ -240,8 +277,8 @@ const Index = () => {
       {/* Mobile sidebar — same links, slides in from the left. */}
       <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
         <SheetContent side="left" className="w-64 p-3 pt-10 bg-[hsl(150_32%_10%)] border-white/5 text-emerald-50">
-          {navList}
-          {settingsLink}
+          {buildNav(false)}
+          {buildSettings(false)}
         </SheetContent>
       </Sheet>
     </DepartmentProvider>

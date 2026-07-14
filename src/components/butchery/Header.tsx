@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Hotel, LogOut, Moon, Sun, User, UtensilsCrossed, Wine } from "lucide-react";
+import { Hotel, LogOut, Moon, Sun, User, UtensilsCrossed, Wine, ChevronDown } from "lucide-react";
 import { useTheme } from "next-themes";
 import { ksh } from "@/lib/format";
 import { useSales } from "@/lib/butchery-store";
@@ -149,48 +149,61 @@ export const Header = ({ leading }: { leading?: React.ReactNode } = {}) => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 sm:gap-4 shrink-0">
-          {/* Shown on every screen size (incl. phones) — the button already
-              hides itself when the app is installed or can't be installed. */}
+        {/* Right side — three tidy clusters divided by hairlines:
+            [ context ] | [ today's money ] | [ theme + account ] */}
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <InstallButton variant="ghost" />
-          <DepartmentSwitcher />
 
-          <div className="text-right hidden sm:block">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Today's Sales
-            </p>
-            <p className="text-2xl font-bold text-primary leading-tight">
-              {ksh(total)}
-            </p>
-            {credit > 0 && (
-              <p className="text-[10px] text-destructive font-medium">
-                {ksh(credit)} on credit
-              </p>
-            )}
-          </div>
+          {/* Department context — only where it means something (POS sellers). */}
+          {profile?.role !== "room_manager" && <DepartmentSwitcher />}
+
+          {/* Today's sales — a POS metric, so not shown to a room manager
+              (their room income lives on the Rooms page instead). */}
+          {profile?.role !== "room_manager" && (
+            <div className="hidden sm:flex items-center gap-3">
+              <span className="h-8 w-px bg-border" aria-hidden />
+              <div className="text-right">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground leading-none">
+                  Today's Sales
+                </p>
+                <p className="text-xl font-bold text-primary leading-tight tabular-nums">
+                  {ksh(total)}
+                </p>
+                {credit > 0 && (
+                  <p className="text-[10px] text-destructive font-medium leading-none">
+                    {ksh(credit)} on credit
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          <span className="hidden sm:block h-8 w-px bg-border" aria-hidden />
 
           <ThemeToggle />
 
-          {/* Who's signed in — name + role, visible at a glance (no click). */}
-          <div className="text-right hidden lg:block max-w-[160px]">
-            <p className="text-sm font-semibold leading-tight truncate">
-              {profile?.full_name ?? "User"}
-            </p>
-            <p className="text-[11px] text-muted-foreground leading-tight">
-              {ROLE_LABEL[profile?.role ?? ""] ?? profile?.role}
-            </p>
-          </div>
-
+          {/* Account — one clickable pill (avatar + name/role + caret) → menu. */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button
-                size="icon"
-                className="rounded-full h-9 w-9 bg-accent text-accent-foreground border border-accent hover:bg-accent/90 font-bold"
+              <button
+                type="button"
+                className="flex items-center gap-2 rounded-full py-1 pl-1 pr-1.5 sm:pr-2.5 hover:bg-muted transition-colors"
               >
-                {profile?.full_name?.trim()?.[0]?.toUpperCase() ?? <User className="h-4 w-4" />}
-              </Button>
+                <span className="grid h-9 w-9 place-items-center rounded-full bg-accent text-accent-foreground font-bold shrink-0">
+                  {profile?.full_name?.trim()?.[0]?.toUpperCase() ?? <User className="h-4 w-4" />}
+                </span>
+                <span className="hidden lg:block text-left leading-tight max-w-[130px]">
+                  <span className="block text-sm font-semibold truncate">
+                    {profile?.full_name ?? "User"}
+                  </span>
+                  <span className="block text-[11px] text-muted-foreground truncate">
+                    {ROLE_LABEL[profile?.role ?? ""] ?? profile?.role}
+                  </span>
+                </span>
+                <ChevronDown className="hidden lg:block h-4 w-4 text-muted-foreground shrink-0" />
+              </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel className="font-normal">
                 <p className="font-medium text-sm truncate">{profile?.full_name ?? "User"}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
