@@ -13,6 +13,8 @@ import { SESSION_KEY, type Session } from "@/contexts/AuthContext";
 import {
   CustomerBalance,
   CustomerPayment,
+  SalePaymentKind,
+  SalePayment,
   Department,
   FoodGroup,
   PaymentMethodSimple,
@@ -287,6 +289,32 @@ export function useProducts() {
     update: (id: string, patch: Partial<Product>) => updateMutation.mutate({ id, patch }),
     remove: (id: string) => removeMutation.mutate(id),
   };
+}
+
+// ── useOrgUsers ───────────────────────────────────────────────────────────────
+// The org's staff (id + name only) so screens can show "who sold this" from a
+// sale's created_by. Tiny, cached, read-only.
+export function useOrgUsers() {
+  const orgId = getOrgId();
+  const { data: users = [] } = useQuery({
+    queryKey: ["org_users", orgId],
+    queryFn: async (): Promise<{ id: string; full_name: string }[]> => {
+      if (!orgId) return [];
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .eq("org_id", orgId);
+      if (error) throw error;
+      return (data ?? []) as { id: string; full_name: string }[];
+    },
+    staleTime: 60_000,
+    enabled: !!orgId,
+  });
+
+  const nameById = (id?: string | null): string =>
+    (id && users.find((u) => u.id === id)?.full_name) || "";
+
+  return { users, nameById };
 }
 
 // ── useServings ───────────────────────────────────────────────────────────────
@@ -1146,6 +1174,56 @@ export function useShift() {
     closeShift: (shiftId: string, countedCash: number, note?: string) =>
       closeMutation.mutateAsync({ shiftId, countedCash, note }),
   };
+}
+
+// ── useShiftWindow ────────────────────────────────────────────────────────────
+// The current OPERATING shift window for the branch: from when the earliest
+// still-open shift was started (anchor "A" — the ACTUAL shift start) until now.
+// Lets money screens show totals "since the shift started" instead of the whole
+// calendar day. `shiftStart` is null when no shift is open.
+export function useShiftWindow() {
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const qc = useQueryClient();
+  const chId = useRef(`shift_window-${Math.random().toString(36).slice(2)}`);
+
+  const { data: openShifts = [] } = useQuery({
+    queryKey: ["shift_window", orgId, branchId],
+    queryFn: async (): Promise<{ id: string; cashierId: string | null; openedAt: string }[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("shifts")
+        .select("id, cashier_id, opened_at")
+        .eq("branch_id", branchId)
+        .eq("status", "open")
+        .order("opened_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map((r) => ({
+        id: r.id as string,
+        cashierId: (r.cashier_id as string | null) ?? null,
+        openedAt: r.opened_at as string,
+      }));
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  useEffect(() => {
+    if (!branchId) return;
+    const channel = supabase
+      .channel(chId.current)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "shifts", filter: `branch_id=eq.${branchId}` },
+        () => qc.invalidateQueries({ queryKey: ["shift_window", orgId, branchId] }),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [qc, orgId, branchId]);
+
+  // Anchor = the earliest still-open shift's start time (ISO), or null.
+  const shiftStart = openShifts.length ? openShifts[0].openedAt : null;
+  return { shiftStart, openShifts };
 }
 
 // ── useStockOnHand ────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { forwardRef } from "react";
 import { Sale, Product } from "@/lib/butchery-types";
+import { useOrgUsers } from "@/lib/butchery-store";
 import { ksh, qty } from "@/lib/format";
 import { RECEIPT_CSS } from "./receipt-styles";
 
@@ -32,6 +33,9 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
   ({ sale, products, shopName = "Your Business", logoUrl, tagline, phone, mpesaPaybill, mpesaPaybillAccount, mpesaTill }, ref) => {
     const productOf = (id: string) => products.find((p) => p.id === id);
     const dt = new Date(sale.timestamp);
+    // Who rang up this sale (the cashier), for accountability on the printout.
+    const { nameById } = useOrgUsers();
+    const cashierName = nameById(sale.createdBy);
 
     return (
       <>
@@ -62,6 +66,12 @@ export const Receipt = forwardRef<HTMLDivElement, Props>(
             <span>Pay</span>
             <span>{payLabel[sale.payment]}</span>
           </div>
+          {cashierName && (
+            <div className="rcpt-row">
+              <span>Served by</span>
+              <span>{cashierName}</span>
+            </div>
+          )}
 
           <hr className="rcpt-hr" />
 

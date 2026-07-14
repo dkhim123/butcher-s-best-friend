@@ -101,7 +101,7 @@ function ThemeToggle() {
   );
 }
 
-export const Header = () => {
+export const Header = ({ leading }: { leading?: React.ReactNode } = {}) => {
   const { sales } = useSales(todayISO());
   const { profile, org, branch, signOut } = useAuth();
   // Exclude cancelled sales — a void receipt never counts, so this matches the
@@ -116,6 +116,7 @@ export const Header = () => {
     <header className="border-b bg-gradient-surface sticky top-0 z-30 backdrop-blur shadow-soft">
       <div className="container flex items-center justify-between gap-4 py-4">
         <div className="flex items-center gap-3 min-w-0">
+          {leading}
           {org?.logo_url ? (
             <img
               src={org.logo_url}
@@ -182,8 +183,11 @@ export const Header = () => {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" className="rounded-full h-9 w-9">
-                <User className="h-4 w-4" />
+              <Button
+                size="icon"
+                className="rounded-full h-9 w-9 bg-accent text-accent-foreground border border-accent hover:bg-accent/90 font-bold"
+              >
+                {profile?.full_name?.trim()?.[0]?.toUpperCase() ?? <User className="h-4 w-4" />}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">

@@ -26,7 +26,7 @@ import {
   useSalesByCategory,
   useTopFoodGroups,
 } from "@/lib/butchery-store";
-import { ACTIVE_DEPARTMENTS, DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, bottleEquivalent, deptPaidVia, isCancelled, isIngredient, Product, todayISO } from "@/lib/butchery-types";
+import { ACTIVE_DEPARTMENTS, DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, bottleEquivalent, isCancelled, isIngredient, Product, todayISO } from "@/lib/butchery-types";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { ksh, qty } from "@/lib/format";
 
@@ -162,20 +162,38 @@ export const DailyReport = () => {
     });
   }, [products, sales, dailyStock]);
 
-  // Thin bindings over the SHARED sale maths (butchery-types) — identical logic
-  // to the Transactions screen, defined once so the two can never disagree.
-  const deptPaid = (s: (typeof sales)[number], method: "cash" | "mpesa" | "card" | "credit") =>
-    deptPaidVia(s, method, deptProductIds);
-
+  // Department revenue (used by the profit + food-cost detail and the stock
+  // table footer). The headline money tiles use `biz` (whole business) instead.
   const totalRevenue = rows.reduce((a, r) => a + r.revenue, 0);
-  const cashTotal = sales.reduce((a, s) => a + deptPaid(s, "cash"), 0);
-  const mpesaTotal = sales.reduce((a, s) => a + deptPaid(s, "mpesa"), 0);
-  const cardTotal = sales.reduce((a, s) => a + deptPaid(s, "card"), 0);
-  const creditTotal = sales.reduce((a, s) => a + deptPaid(s, "credit"), 0);
-  const creditUnpaid = sales
-    .filter((s) => !s.paid)
-    .reduce((a, s) => a + deptPaid(s, "credit"), 0);
   const purchaseSpend = deptOrders.reduce((a, o) => a + o.totalCost, 0);
+
+  // The headline money tiles show the WHOLE business (every full receipt in the
+  // range), so they match the Transactions page and the header's "Today's
+  // Sales." The per-department stock/profit detail below stays scoped to the
+  // department in focus. This stops the "Reports says 11,100 but Transactions
+  // says 25,400" mismatch (Reports was only counting the department's slice of
+  // each mixed food + drink receipt).
+  const biz = useMemo(() => {
+    const t = { total: 0, cash: 0, mpesa: 0, card: 0, credit: 0, creditUnpaid: 0, count: 0 };
+    for (const s of allDaySales) {
+      if (isCancelled(s)) continue;
+      t.total += s.subtotal;
+      t.count += 1;
+      if (s.payment === "split" && s.payments?.length) {
+        for (const p of s.payments) {
+          if (p.method === "cash") t.cash += p.amount;
+          else if (p.method === "mpesa") t.mpesa += p.amount;
+        }
+      } else if (s.payment === "cash") t.cash += s.subtotal;
+      else if (s.payment === "mpesa") t.mpesa += s.subtotal;
+      else if (s.payment === "card") t.card += s.subtotal;
+      else if (s.payment === "credit") {
+        t.credit += s.subtotal;
+        if (!s.paid) t.creditUnpaid += s.subtotal;
+      }
+    }
+    return t;
+  }, [allDaySales]);
 
   // Profit only counts products whose buying price is known, so we don't
   // pretend an unknown-cost item is 100% margin. We surface how many items
@@ -373,30 +391,30 @@ export const DailyReport = () => {
             <p className="text-xs uppercase tracking-wider opacity-80">Total Revenue</p>
             <Wallet className="h-4 w-4 opacity-80" />
           </div>
-          <p className="text-3xl font-bold">{ksh(totalRevenue)}</p>
-          <p className="text-[10px] opacity-80 mt-1">{sales.length} transactions</p>
+          <p className="text-3xl font-bold">{ksh(biz.total)}</p>
+          <p className="text-[10px] opacity-80 mt-1">{biz.count} transactions · whole business</p>
         </Card>
         <Card className="p-5 shadow-soft">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Cash</p>
-          <p className="text-2xl font-bold">{ksh(cashTotal)}</p>
+          <p className="text-2xl font-bold">{ksh(biz.cash)}</p>
         </Card>
         <Card className="p-5 shadow-soft">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">M-Pesa</p>
-          <p className="text-2xl font-bold">{ksh(mpesaTotal)}</p>
+          <p className="text-2xl font-bold">{ksh(biz.mpesa)}</p>
         </Card>
         <Card className="p-5 shadow-soft">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Card</p>
-          <p className="text-2xl font-bold">{ksh(cardTotal)}</p>
+          <p className="text-2xl font-bold">{ksh(biz.card)}</p>
         </Card>
-        <Card className={`p-5 shadow-soft ${creditUnpaid > 0 ? "border-destructive/40" : ""}`}>
+        <Card className={`p-5 shadow-soft ${biz.creditUnpaid > 0 ? "border-destructive/40" : ""}`}>
           <div className="flex items-center justify-between">
             <p className="text-xs uppercase tracking-wider text-muted-foreground">Credit</p>
-            {creditUnpaid > 0 && <AlertCircle className="h-4 w-4 text-destructive" />}
+            {biz.creditUnpaid > 0 && <AlertCircle className="h-4 w-4 text-destructive" />}
           </div>
-          <p className="text-2xl font-bold">{ksh(creditTotal)}</p>
-          {creditUnpaid > 0 && (
+          <p className="text-2xl font-bold">{ksh(biz.credit)}</p>
+          {biz.creditUnpaid > 0 && (
             <p className="text-[11px] text-destructive font-semibold mt-1">
-              {ksh(creditUnpaid)} unpaid
+              {ksh(biz.creditUnpaid)} unpaid
             </p>
           )}
         </Card>

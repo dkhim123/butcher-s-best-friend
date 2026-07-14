@@ -251,6 +251,15 @@ export const bottleEquivalent = (
     : item.quantity;
 
 export const todayISO = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  // The business day in Africa/Nairobi — the SAME timezone the database stamps
+  // sales.date in. Using the device's own timezone (as before) meant a tablet
+  // set to the wrong zone, or a device used across a border, would put "today"
+  // on the wrong calendar day and make sales appear/disappear from today's
+  // totals. en-CA formats as YYYY-MM-DD.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Nairobi",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 };

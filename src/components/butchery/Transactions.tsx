@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Receipt as ReceiptIcon, Search, Check, Ban, X as XIcon } from "lucide-react";
+import { Eye, Search, Check, Ban, X as XIcon } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -19,20 +19,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useProducts, useSales } from "@/lib/butchery-store";
-import { Sale, deptLineTotal, deptPaidVia, isCancelled, todayISO } from "@/lib/butchery-types";
-import { useActiveDepartment } from "@/contexts/DepartmentContext";
+import { useOrgUsers, useProducts, useSales, useShiftWindow } from "@/lib/butchery-store";
+import { Sale, isCancelled, todayISO } from "@/lib/butchery-types";
 import { useAuth } from "@/contexts/AuthContext";
 import { ksh, qty } from "@/lib/format";
 import { ReceiptDialog } from "./ReceiptDialog";
 import { toast } from "sonner";
 
 export const Transactions = () => {
-  const { active: activeDepartment } = useActiveDepartment();
   const { org, profile, role } = useAuth();
   const { products } = useProducts();
+  const { nameById } = useOrgUsers();
+  const { shiftStart } = useShiftWindow();
   const { allSales, update, requestCancel, approveCancel, rejectCancel } = useSales();
-  const isManagerOrAbove = role === "admin" || role === "manager";
+  // Only an ADMIN can actually cancel (void) a sale. Cashiers and managers can
+  // REQUEST a cancellation, which an admin then approves or rejects.
+  const isAdmin = role === "admin";
 
   // Date RANGE filter (defaults to today→today = a single day).
   const [from, setFrom] = useState<string>(todayISO());
@@ -40,21 +42,24 @@ export const Transactions = () => {
   const [pay, setPay] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Sale | null>(null);
+  // "This shift" (anchor A — since the shift started) vs custom dates.
+  const [period, setPeriod] = useState<"shift" | "custom">("shift");
+  const useShift = period === "shift" && !!shiftStart;
+  const shiftStartMs = shiftStart ? Date.parse(shiftStart) : 0;
+  const shiftStartLabel = shiftStart
+    ? new Date(shiftStart).toLocaleString("en-KE", { hour: "2-digit", minute: "2-digit" })
+    : null;
   // Compare with the earlier date first so an inverted range still works.
   const lo = from <= to ? from : to;
   const hi = from <= to ? to : from;
 
-  // Product IDs in the active department — used to keep this history scoped to
-  // the Bar or the Restaurant, matching the header switcher.
-  const deptProductIds = useMemo(
-    () => new Set(products.filter((p) => p.department === activeDepartment).map((p) => p.id)),
-    [products, activeDepartment],
-  );
-
+  // A transaction is the WHOLE receipt: we show its FULL amount and ALL its
+  // items, never a per-department slice. (A mixed food + drink sale used to
+  // show only its restaurant part on the Restaurant view — e.g. a Ksh 900
+  // receipt read as Ksh 200 — which looked like money had gone missing.)
   const rows = useMemo(() => {
     return allSales
-      .filter((s) => s.items.some((i) => deptProductIds.has(i.productId)))
-      .filter((s) => s.date >= lo && s.date <= hi)
+      .filter((s) => (useShift ? s.timestamp >= shiftStartMs : s.date >= lo && s.date <= hi))
       .filter((s) => (pay === "all" ? true : s.payment === pay))
       .filter((s) => {
         if (!search.trim()) return true;
@@ -65,28 +70,26 @@ export const Transactions = () => {
           (s.mpesaRef ?? "").toLowerCase().includes(q)
         );
       });
-  }, [allSales, deptProductIds, lo, hi, pay, search]);
-
-  // Thin bindings over the SHARED sale maths (butchery-types) so this screen and
-  // the Report can never compute a department's slice differently.
-  const deptAmount = (s: Sale) => deptLineTotal(s, deptProductIds);
-  const deptPaid = (s: Sale, method: "cash" | "mpesa" | "card" | "credit") =>
-    deptPaidVia(s, method, deptProductIds);
+  }, [allSales, useShift, shiftStartMs, lo, hi, pay, search]);
 
   const totals = useMemo(() => {
     const t = { cash: 0, mpesa: 0, card: 0, credit: 0, all: 0 };
     rows.forEach((s) => {
       // A cancelled sale is void — it never counts toward the money totals.
       if (isCancelled(s)) return;
-      t.cash += deptPaid(s, "cash");
-      t.mpesa += deptPaid(s, "mpesa");
-      t.card += deptPaid(s, "card");
-      t.credit += deptPaid(s, "credit");
-      t.all += deptAmount(s);
+      t.all += s.subtotal;
+      if (s.payment === "split" && s.payments?.length) {
+        for (const p of s.payments) {
+          if (p.method === "cash") t.cash += p.amount;
+          else if (p.method === "mpesa") t.mpesa += p.amount;
+        }
+      } else if (s.payment === "cash") t.cash += s.subtotal;
+      else if (s.payment === "mpesa") t.mpesa += s.subtotal;
+      else if (s.payment === "card") t.card += s.subtotal;
+      else if (s.payment === "credit") t.credit += s.subtotal;
     });
     return t;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, deptProductIds]);
+  }, [rows]);
 
   const markPaid = (id: string) => {
     update(id, { paid: true });
@@ -94,10 +97,10 @@ export const Transactions = () => {
   };
 
   // ── Cancellation workflow ────────────────────────────────────────────────
-  // A cashier REQUESTS a cancel (with a reason); an admin/manager APPROVES it
-  // (which reverses the stock the sale removed) or REJECTS it. A manager can
-  // do both in one step, so for them the button reads "Cancel" and voids
-  // immediately.
+  // A cashier or manager REQUESTS a cancel (with a reason); only an ADMIN can
+  // APPROVE it (which reverses the stock the sale removed) or REJECT it. For an
+  // admin the button reads "Cancel" and voids immediately; for everyone else it
+  // reads "Request cancel".
   const [cancelTarget, setCancelTarget] = useState<Sale | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -108,11 +111,11 @@ export const Transactions = () => {
     setBusyId(id);
     try {
       await requestCancel(id, cancelReason.trim() || undefined);
-      if (isManagerOrAbove) {
+      if (isAdmin) {
         await approveCancel(id);
         toast.success("Sale cancelled — stock returned");
       } else {
-        toast.success("Cancellation requested — a manager must approve it");
+        toast.success("Cancellation requested — an admin must approve it");
       }
       setCancelTarget(null);
       setCancelReason("");
@@ -149,6 +152,31 @@ export const Transactions = () => {
 
   return (
     <div className="space-y-6">
+      {/* Shift vs custom-dates toggle (anchor A). */}
+      {shiftStart && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex rounded-full border bg-muted/40 p-0.5 text-sm">
+            {(["shift", "custom"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setPeriod(m)}
+                className={`rounded-full px-3 py-1.5 font-medium transition-colors ${
+                  period === m
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {m === "shift" ? "This shift" : "Custom dates"}
+              </button>
+            ))}
+          </div>
+          {useShift && shiftStartLabel && (
+            <span className="text-xs text-muted-foreground">Since shift started · {shiftStartLabel}</span>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <Stat label="Total" value={totals.all} highlight />
         <Stat label="Cash" value={totals.cash} />
@@ -161,11 +189,11 @@ export const Transactions = () => {
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="space-y-1">
             <Label className="text-xs">From</Label>
-            <Input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+            <Input type="date" value={from} max={to} disabled={useShift} onChange={(e) => setFrom(e.target.value)} />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">To</Label>
-            <Input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+            <Input type="date" value={to} min={from} disabled={useShift} onChange={(e) => setTo(e.target.value)} />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Payment</Label>
@@ -221,7 +249,14 @@ export const Transactions = () => {
                       isCancelled(s) ? "opacity-55" : ""
                     }`}
                   >
-                    <td className="p-3 font-mono text-xs">{s.receiptNo}</td>
+                    <td className="p-3 font-mono text-xs">
+                      {s.receiptNo}
+                      {nameById(s.createdBy) && (
+                        <div className="text-[10px] text-muted-foreground font-sans mt-0.5">
+                          by {nameById(s.createdBy)}
+                        </div>
+                      )}
+                    </td>
                     <td className="p-3 text-xs">
                       {new Date(s.timestamp).toLocaleTimeString("en-KE", {
                         hour: "2-digit",
@@ -230,7 +265,6 @@ export const Transactions = () => {
                     </td>
                     <td className="p-3 text-xs">
                       {s.items
-                        .filter((it) => deptProductIds.has(it.productId))
                         .map((it, i) => {
                           const p = products.find((x) => x.id === it.productId);
                           return (
@@ -269,12 +303,12 @@ export const Transactions = () => {
                       )}
                     </td>
                     <td className="p-3 text-right font-bold text-primary tabular-nums">
-                      {ksh(deptAmount(s))}
+                      {ksh(s.subtotal)}
                     </td>
                     <td className="p-3 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1 flex-wrap">
                         <Button size="sm" variant="outline" onClick={() => setSelected(s)}>
-                          <ReceiptIcon className="h-3.5 w-3.5 mr-1" /> View
+                          <Eye className="h-3.5 w-3.5 mr-1" /> View
                         </Button>
 
                         {s.payment === "credit" && !s.paid && !isCancelled(s) && (
@@ -293,7 +327,7 @@ export const Transactions = () => {
                             <Ban className="h-3 w-3" /> Cancelled
                           </Badge>
                         ) : s.cancelState === "requested" ? (
-                          isManagerOrAbove ? (
+                          isAdmin ? (
                             <>
                               <Button
                                 size="sm"
@@ -330,7 +364,7 @@ export const Transactions = () => {
                             }}
                           >
                             <Ban className="h-3.5 w-3.5 mr-1" />
-                            {isManagerOrAbove ? "Cancel" : "Request cancel"}
+                            {isAdmin ? "Cancel" : "Request cancel"}
                           </Button>
                         )}
                       </div>
@@ -353,7 +387,7 @@ export const Transactions = () => {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Ban className="h-4 w-4 text-destructive" />
-              {isManagerOrAbove ? "Cancel this sale?" : "Request a cancellation"}
+              {isAdmin ? "Cancel this sale?" : "Request a cancellation"}
             </DialogTitle>
           </DialogHeader>
           {cancelTarget && (
@@ -363,13 +397,13 @@ export const Transactions = () => {
                 <span className="font-mono font-medium text-foreground">
                   {cancelTarget.receiptNo}
                 </span>{" "}
-                · {ksh(deptAmount(cancelTarget))}.{" "}
-                {isManagerOrAbove
+                · {ksh(cancelTarget.subtotal)}.{" "}
+                {isAdmin
                   ? "The stock it sold will be returned to inventory and the money will stop counting."
                   : "A manager will need to approve it before it takes effect."}
               </p>
               <div className="space-y-1.5">
-                <Label className="text-xs">Reason {isManagerOrAbove ? "(optional)" : "(recommended)"}</Label>
+                <Label className="text-xs">Reason {isAdmin ? "(optional)" : "(recommended)"}</Label>
                 <Textarea
                   placeholder="e.g. wrong item rung up, customer changed their mind…"
                   value={cancelReason}
@@ -389,7 +423,7 @@ export const Transactions = () => {
                   <Ban className="h-4 w-4 mr-1" />
                   {busyId === cancelTarget.id
                     ? "Working…"
-                    : isManagerOrAbove
+                    : isAdmin
                       ? "Cancel sale"
                       : "Send request"}
                 </Button>

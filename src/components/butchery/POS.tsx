@@ -116,9 +116,11 @@ export const POS = () => {
   const { orders, createOrder, addItems, payOrder, voidOrder } = useOrders();
   const { shift, cashSoFar, openShift, closeShift } = useShift();
   const { customers, add: addCustomer } = useCustomers();
-  // Cashiers must be on an open shift to sell (accountability + cash-up).
-  // Admins/managers can ring up without one.
-  const requiresShift = role === "cashier";
+  // Everyone must be on an open shift to sell — the till stays locked until a
+  // shift is started, and is cashed-up when closed. This gives full
+  // accountability (who sold what, in which shift) for every sale, including the
+  // admin's. Shifts can start at any time and cross midnight (e.g. 6am → 1am).
+  const requiresShift = role === "cashier" || role === "manager" || role === "admin";
   const { byProductId: stockOnHand } = useStockOnHand();
   const scale = useWeighingScale();
 
@@ -512,6 +514,30 @@ export const POS = () => {
   };
 
   // ── Render ──────────────────────────────────────────────────
+  // Till locked: nobody (cashier, manager, or admin) can ring up a sale until
+  // they start a shift. We show ONLY the shift bar + a prompt, so the whole POS
+  // is unavailable until the shift is open.
+  if (requiresShift && !shift) {
+    return (
+      <div className="max-w-xl mx-auto mt-6 space-y-4">
+        <ShiftBar
+          shift={shift}
+          cashSoFar={cashSoFar}
+          onOpen={openShift}
+          onClose={(counted) => closeShift(shift!.id, counted)}
+        />
+        <Card className="p-8 text-center shadow-soft">
+          <Clock className="h-10 w-10 mx-auto text-muted-foreground/50 mb-3" />
+          <h3 className="font-semibold text-lg">Start your shift to open the till</h3>
+          <p className="text-sm text-muted-foreground mt-1">
+            The POS is locked until you start a shift. Tap “Start shift” above — it
+            can begin at any time and stays open until you close it (even past midnight).
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <>
       {requiresShift && (
@@ -882,12 +908,25 @@ function ProductTile({
   // servings, cart quantity is in pours (not bottles), so we don't subtract it.
   const effective = isInfinite || hasServings ? stock : Math.max(0, stock - inCart);
   const out = !isInfinite && !hasServings && effective <= 0;
+  // "Low stock" once we're down to the last few units — a red warning so the
+  // cashier flags a restock before it runs out. Out-of-stock tiles turn solid
+  // red and can't be tapped at all.
+  const LOW_STOCK_THRESHOLD = 5;
+  const low = !isInfinite && !hasServings && !out && effective <= LOW_STOCK_THRESHOLD;
 
   return (
     <button
       type="button"
-      onClick={onTap}
-      className="group relative flex min-h-[7rem] flex-col gap-1 rounded-xl border bg-background p-4 text-left transition-all hover:border-primary/60 hover:shadow-soft active:scale-[0.98]"
+      onClick={out ? undefined : onTap}
+      disabled={out}
+      aria-disabled={out}
+      className={`group relative flex min-h-[7rem] flex-col gap-1 rounded-xl border p-4 text-left transition-all ${
+        out
+          ? "border-destructive bg-destructive/10 ring-1 ring-destructive/30 cursor-not-allowed opacity-90"
+          : low
+            ? "border-destructive/50 bg-destructive/5 hover:border-destructive hover:shadow-soft active:scale-[0.98]"
+            : "border-border bg-background hover:border-primary/60 hover:shadow-soft active:scale-[0.98]"
+      }`}
     >
       {inCart > 0 && (
         <Badge className="absolute -top-2 -right-2 h-7 min-w-7 rounded-full flex items-center justify-center px-1.5 text-sm font-bold bg-primary text-primary-foreground border-2 border-background shadow-soft tabular-nums">
@@ -898,7 +937,7 @@ function ProductTile({
       <p className="font-semibold text-base leading-tight pr-6">
         {product.name}
       </p>
-      <p className="text-primary font-bold text-lg">
+      <p className="text-foreground font-bold text-lg">
         {hasServings ? (
           <span className="text-sm">Tap to choose pour</span>
         ) : (
@@ -915,8 +954,17 @@ function ProductTile({
       <div className="mt-auto pt-1">
         {product.trackStock ? (
           out ? (
-            <p className="text-xs text-destructive font-semibold">
+            <p className="text-xs text-destructive font-bold uppercase tracking-wide">
               Out of stock
+            </p>
+          ) : low ? (
+            <p className="text-xs text-destructive font-semibold">
+              Low stock — {qty(effective, product.unit)} left
+              {!hasServings && inCart > 0 && (
+                <span className="ml-1 text-[10px]">
+                  · {qty(inCart, product.unit)} in cart
+                </span>
+              )}
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">

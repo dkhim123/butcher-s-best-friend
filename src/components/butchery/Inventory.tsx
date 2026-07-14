@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Beef, Truck, ChefHat, ClipboardCheck, History as HistoryIcon } from "lucide-react";
+import { Beef, Truck, ChefHat, ClipboardCheck } from "lucide-react";
 import { ProductsManager } from "./ProductsManager";
 import { PurchaseOrders } from "./PurchaseOrders";
-import { StockMovementsLog } from "./StockMovementsLog";
 import { IngredientUsage } from "./IngredientUsage";
 import { StockTake } from "./StockTake";
 import { useAuth } from "@/contexts/AuthContext";
@@ -17,21 +16,21 @@ import { useActiveDepartment } from "@/contexts/DepartmentContext";
  * tabs. They were doing two halves of the same job and forced the
  * user to think about which side of the system to use. Now:
  *
- *   - Products tab        — the menu (add / edit / delete items)
- *   - Purchases tab       — supplier deliveries (adds stock + cost)
- *   - Stock movements tab — full audit log of every +/- change
+ *   - Products tab   — the menu (add / edit / delete items)
+ *   - Purchases tab  — supplier deliveries (adds stock + cost)
+ *   - Kitchen tab    — chef's ingredient usage (Restaurant only)
+ *   - Stock-take tab — physical counts
  *
- * We persist the active sub-tab in the URL hash too, so a reload
- * on "Stock movements" doesn't bounce you back to Products. The
- * sub-tab encoding is "#inventory/movements" — the part before
- * the slash is owned by Index.tsx, the part after by this file.
+ * (The per-product stock movement summary lives on the Report, so it isn't
+ * repeated here.) We persist the active sub-tab in the URL hash too, so a
+ * reload on "Purchases" doesn't bounce you back to Products.
  */
 
-type SubTabId = "products" | "purchases" | "usage" | "stocktake" | "movements";
+type SubTabId = "products" | "purchases" | "usage" | "stocktake";
 const DEFAULT_SUB: SubTabId = "products";
 
 const isSubTab = (v: string): v is SubTabId =>
-  v === "products" || v === "purchases" || v === "usage" || v === "stocktake" || v === "movements";
+  v === "products" || v === "purchases" || v === "usage" || v === "stocktake";
 
 // Read the part AFTER the slash in the URL hash:
 //   "#inventory"          → ""
@@ -73,9 +72,7 @@ export const Inventory = () => {
         ? "usage"
         : canSeeStockTake
           ? "stocktake"
-          : canSeeMovements
-            ? "movements"
-            : "products";
+          : "products";
 
   const resolveInitial = (): SubTabId => {
     const raw = readSubFromHash();
@@ -83,7 +80,6 @@ export const Inventory = () => {
     if (raw === "purchases" && canSeePurchases) return "purchases";
     if (raw === "usage" && canSeeUsage) return "usage";
     if (raw === "stocktake" && canSeeStockTake) return "stocktake";
-    if (raw === "movements" && canSeeMovements) return "movements";
     return firstAllowed;
   };
 
@@ -111,7 +107,7 @@ export const Inventory = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canSeeProducts, canSeePurchases, canSeeUsage, canSeeStockTake, canSeeMovements]);
 
-  const tabCount = [canSeeProducts, canSeePurchases, canSeeUsage, canSeeStockTake, canSeeMovements].filter(Boolean).length;
+  const tabCount = [canSeeProducts, canSeePurchases, canSeeUsage, canSeeStockTake].filter(Boolean).length;
 
   return (
     <Tabs value={sub} onValueChange={handleChange} className="space-y-6">
@@ -139,11 +135,6 @@ export const Inventory = () => {
             <ClipboardCheck className="h-4 w-4" /> Stock-take
           </TabsTrigger>
         )}
-        {canSeeMovements && (
-          <TabsTrigger value="movements" className="gap-1.5 py-2 text-xs sm:text-sm">
-            <HistoryIcon className="h-4 w-4" /> Stock log
-          </TabsTrigger>
-        )}
       </TabsList>
 
       {canSeeProducts && (
@@ -164,11 +155,6 @@ export const Inventory = () => {
       {canSeeStockTake && (
         <TabsContent value="stocktake" className="m-0">
           <StockTake />
-        </TabsContent>
-      )}
-      {canSeeMovements && (
-        <TabsContent value="movements" className="m-0">
-          <StockMovementsLog />
         </TabsContent>
       )}
     </Tabs>

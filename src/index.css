@@ -7,50 +7,52 @@
 
 @layer base {
   :root {
-    --background: 30 33% 97%;
-    --foreground: 20 30% 12%;
+    /* Light green + gold theme. Faint green-tinted paper, fresh green primary,
+       warm gold accent. All colors MUST be HSL. */
+    --background: 140 25% 97%;
+    --foreground: 150 25% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 20 30% 12%;
+    --card-foreground: 150 25% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 20 30% 12%;
+    --popover-foreground: 150 25% 12%;
 
-    /* Deep meat red */
-    --primary: 0 65% 38%;
-    --primary-foreground: 30 33% 97%;
-    --primary-glow: 8 75% 52%;
+    /* Fresh emerald green */
+    --primary: 150 58% 33%;
+    --primary-foreground: 140 30% 98%;
+    --primary-glow: 150 62% 45%;
 
-    /* Warm cream */
-    --secondary: 30 30% 92%;
-    --secondary-foreground: 20 30% 18%;
+    /* Soft green-grey */
+    --secondary: 140 25% 92%;
+    --secondary-foreground: 150 25% 18%;
 
-    --muted: 30 20% 93%;
-    --muted-foreground: 20 10% 40%;
+    --muted: 140 18% 93%;
+    --muted-foreground: 150 8% 40%;
 
     /* Warm gold accent */
-    --accent: 36 80% 52%;
-    --accent-foreground: 20 30% 12%;
+    --accent: 44 92% 52%;
+    --accent-foreground: 40 50% 12%;
 
     --destructive: 0 75% 45%;
-    --destructive-foreground: 30 33% 97%;
+    --destructive-foreground: 140 30% 98%;
 
-    --success: 140 55% 35%;
-    --success-foreground: 30 33% 97%;
+    --success: 142 55% 33%;
+    --success-foreground: 140 30% 98%;
 
-    --border: 30 20% 86%;
-    --input: 30 20% 88%;
-    --ring: 0 65% 38%;
+    --border: 140 18% 85%;
+    --input: 140 18% 88%;
+    --ring: 150 58% 33%;
 
     --radius: 0.75rem;
 
     --gradient-primary: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary-glow)));
-    --gradient-warm: linear-gradient(135deg, hsl(36 80% 52%), hsl(20 75% 50%));
-    --gradient-surface: linear-gradient(180deg, hsl(30 33% 98%), hsl(30 30% 94%));
+    --gradient-warm: linear-gradient(135deg, hsl(42 90% 55%), hsl(36 85% 48%));
+    --gradient-surface: linear-gradient(180deg, hsl(140 30% 98%), hsl(140 25% 94%));
 
-    --shadow-sm: 0 1px 2px hsl(20 30% 12% / 0.06);
-    --shadow-md: 0 8px 24px -8px hsl(20 30% 12% / 0.15);
-    --shadow-lg: 0 20px 50px -12px hsl(0 65% 38% / 0.25);
+    --shadow-sm: 0 1px 2px hsl(150 25% 12% / 0.06);
+    --shadow-md: 0 8px 24px -8px hsl(150 25% 12% / 0.15);
+    --shadow-lg: 0 20px 50px -12px hsl(142 46% 36% / 0.25);
 
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
@@ -63,32 +65,33 @@
   }
 
   .dark {
-    --background: 20 20% 8%;
-    --foreground: 30 30% 95%;
-    --card: 20 22% 11%;
-    --card-foreground: 30 30% 95%;
-    --popover: 20 22% 11%;
-    --popover-foreground: 30 30% 95%;
-    --primary: 8 75% 55%;
-    --primary-foreground: 20 30% 8%;
-    --primary-glow: 0 70% 50%;
-    --secondary: 20 15% 18%;
-    --secondary-foreground: 30 30% 95%;
-    --muted: 20 15% 16%;
-    --muted-foreground: 30 10% 65%;
-    --accent: 36 80% 55%;
-    --accent-foreground: 20 30% 8%;
+    /* Dark green + gold. Deep green-black paper, brighter green primary. */
+    --background: 150 18% 8%;
+    --foreground: 140 20% 95%;
+    --card: 150 16% 11%;
+    --card-foreground: 140 20% 95%;
+    --popover: 150 16% 11%;
+    --popover-foreground: 140 20% 95%;
+    --primary: 150 55% 44%;
+    --primary-foreground: 150 30% 8%;
+    --primary-glow: 150 58% 38%;
+    --secondary: 150 12% 18%;
+    --secondary-foreground: 140 20% 95%;
+    --muted: 150 12% 16%;
+    --muted-foreground: 140 10% 65%;
+    --accent: 44 90% 56%;
+    --accent-foreground: 40 40% 8%;
     --destructive: 0 70% 50%;
-    --destructive-foreground: 30 30% 95%;
-    --success: 140 50% 45%;
-    --success-foreground: 20 30% 8%;
-    --border: 20 15% 20%;
-    --input: 20 15% 20%;
-    --ring: 8 75% 55%;
+    --destructive-foreground: 140 20% 95%;
+    --success: 142 50% 48%;
+    --success-foreground: 150 30% 8%;
+    --border: 150 12% 20%;
+    --input: 150 12% 20%;
+    --ring: 150 55% 44%;
     /* Night-mode surface gradient — the :root one is light-only, so without
        this override every card header / nav bar using bg-gradient-surface
        stayed washed-out white in dark mode. */
-    --gradient-surface: linear-gradient(180deg, hsl(20 22% 13%), hsl(20 20% 9%));
+    --gradient-surface: linear-gradient(180deg, hsl(150 16% 13%), hsl(150 18% 9%));
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
@@ -107,6 +110,13 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "ss01", "cv11";
+    /* Clean, highly-legible sans for all the numbers and body text. */
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  /* Elegant serif for titles — the premium "tavern" feel, no external font
+     needed (Georgia ships on every device; Times New Roman is the fallback). */
+  h1, h2, h3, .font-display {
+    font-family: Georgia, "Times New Roman", "Times", serif;
   }
 }
 

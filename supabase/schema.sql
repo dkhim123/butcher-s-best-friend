@@ -811,8 +811,8 @@ DECLARE v_org UUID;
 BEGIN
   SELECT org_id INTO v_org FROM public.sales WHERE id = p_sale_id;
   IF NOT EXISTS (SELECT 1 FROM public.profiles
-                 WHERE id = p_actor_id AND role IN ('admin','manager') AND org_id = v_org) THEN
-    RAISE EXCEPTION 'Only an admin or manager can decide cancellations' USING ERRCODE = '42501';
+                 WHERE id = p_actor_id AND role = 'admin' AND org_id = v_org) THEN
+    RAISE EXCEPTION 'Only an admin can decide cancellations' USING ERRCODE = '42501';
   END IF;
   UPDATE public.sales SET cancel_state = 'rejected'
    WHERE id = p_sale_id AND cancel_state = 'requested';
@@ -829,8 +829,8 @@ BEGIN
     FROM public.sales WHERE id = p_sale_id;
   IF v_org IS NULL THEN RAISE EXCEPTION 'Sale not found' USING ERRCODE = '23503'; END IF;
   IF NOT EXISTS (SELECT 1 FROM public.profiles
-                 WHERE id = p_actor_id AND role IN ('admin','manager') AND org_id = v_org) THEN
-    RAISE EXCEPTION 'Only an admin or manager can approve cancellations' USING ERRCODE = '42501';
+                 WHERE id = p_actor_id AND role = 'admin' AND org_id = v_org) THEN
+    RAISE EXCEPTION 'Only an admin can cancel a sale' USING ERRCODE = '42501';
   END IF;
 
   FOR m IN
@@ -1303,7 +1303,11 @@ BEGIN
     INSERT INTO public.sale_items (sale_id, product_id, quantity, unit_price, amount, serving_name, serving_ml)
     VALUES (v_sale.id, oi.product_id, oi.quantity, oi.unit_price, 0, oi.serving_name, oi.serving_ml)
     RETURNING id INTO v_si;
-    UPDATE public.stock_movements SET ref_table = 'sale_items', ref_id = v_si
+    -- Re-date the outflow to the SALE moment so the report attributes stock-out
+    -- to the same day as the revenue. An order placed late one night and paid
+    -- after midnight otherwise showed revenue on the pay day but "Out" on the
+    -- order day. This does NOT change stock-on-hand (SUM of deltas is unchanged).
+    UPDATE public.stock_movements SET ref_table = 'sale_items', ref_id = v_si, occurred_at = v_sale.created_at
       WHERE ref_table = 'order_items' AND ref_id = oi.id AND reason = 'sale';
   END LOOP;
   PERFORM set_config('app.skip_sale_stock','0', true);
