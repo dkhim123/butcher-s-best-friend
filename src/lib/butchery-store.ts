@@ -1607,6 +1607,23 @@ export interface ResourceItem {
   category: string;
   unit: string;
   qtyOnHand: number;
+  reorderLevel: number;
+  supplierId: string | null;
+}
+export interface ResourceSupplier {
+  id: string;
+  name: string;
+  phone: string | null;
+  supplies: string | null;
+  note: string | null;
+}
+export interface ResourceSupplierPayment {
+  id: string;
+  supplierId: string;
+  amount: number;
+  note: string | null;
+  paidBy: string | null;
+  paidAt: string;
 }
 export interface ResourceMovementRow {
   id: string;
@@ -1634,7 +1651,7 @@ export function useResources() {
       if (!orgId || !branchId) return [];
       const { data, error } = await supabase
         .from("v_resources_on_hand")
-        .select("resource_id, name, category, unit, qty_on_hand")
+        .select("resource_id, name, category, unit, qty_on_hand, reorder_level, supplier_id")
         .eq("org_id", orgId).eq("branch_id", branchId)
         .order("name");
       if (error) throw error;
@@ -1644,6 +1661,8 @@ export function useResources() {
         category: r.category as string,
         unit: r.unit as string,
         qtyOnHand: Number(r.qty_on_hand),
+        reorderLevel: Number(r.reorder_level ?? 0),
+        supplierId: (r.supplier_id as string) ?? null,
       }));
     },
     staleTime: 15_000,
@@ -1651,10 +1670,10 @@ export function useResources() {
   });
 
   const addItem = useMutation({
-    mutationFn: async (r: { name: string; category: string; unit: string; opening?: number; note?: string }) => {
+    mutationFn: async (r: { name: string; category: string; unit: string; opening?: number; reorderLevel?: number; note?: string }) => {
       const { data, error } = await supabase
         .from("resources")
-        .insert({ org_id: orgId, branch_id: branchId, name: r.name, category: r.category, unit: r.unit, note: r.note ?? null } as never)
+        .insert({ org_id: orgId, branch_id: branchId, name: r.name, category: r.category, unit: r.unit, reorder_level: r.reorderLevel ?? 0, note: r.note ?? null } as never)
         .select("id").single();
       if (error) throw new Error(error.message);
       const id = (data as { id: string }).id;
@@ -1668,10 +1687,27 @@ export function useResources() {
     onSuccess: () => qc.invalidateQueries({ queryKey: key }),
   });
 
+  const updateItem = useMutation({
+    mutationFn: async (r: { id: string; name?: string; category?: string; unit?: string; reorderLevel?: number; supplierId?: string | null }) => {
+      const patch: Record<string, unknown> = {};
+      if (r.name !== undefined) patch.name = r.name;
+      if (r.category !== undefined) patch.category = r.category;
+      if (r.unit !== undefined) patch.unit = r.unit;
+      if (r.reorderLevel !== undefined) patch.reorder_level = r.reorderLevel;
+      if (r.supplierId !== undefined) patch.supplier_id = r.supplierId;
+      const { error } = await supabase.from("resources").update(patch as never).eq("id", r.id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
   const record = useMutation({
-    mutationFn: async (m: { resourceId: string; delta: number; reason: ResourceMovementRow["reason"]; note?: string }) => {
+    mutationFn: async (m: { resourceId: string; delta: number; reason: ResourceMovementRow["reason"]; note?: string; supplierId?: string | null; unitCost?: number | null; paid?: boolean | null }) => {
+      const unit = m.unitCost != null && Number.isFinite(m.unitCost) ? m.unitCost : null;
       const { error } = await supabase.from("resource_movements").insert({
-        org_id: orgId, branch_id: branchId, resource_id: m.resourceId, delta_qty: m.delta, reason: m.reason, note: m.note ?? null, created_by: profileId,
+        org_id: orgId, branch_id: branchId, resource_id: m.resourceId, delta_qty: m.delta, reason: m.reason, note: m.note ?? null,
+        supplier_id: m.supplierId ?? null, unit_cost: unit, total_cost: unit != null ? unit * Math.abs(m.delta) : null,
+        paid: m.paid ?? null, created_by: profileId,
       } as never);
       if (error) throw new Error(error.message);
     },
@@ -1686,11 +1722,234 @@ export function useResources() {
     onSuccess: () => qc.invalidateQueries({ queryKey: key }),
   });
 
+  // Settle (or un-settle) a supplier restock: stamps when + who when paying.
+  const setPaid = useMutation({
+    mutationFn: async (p: { movementId: string; paid: boolean }) => {
+      const { error } = await supabase.from("resource_movements").update({
+        paid: p.paid,
+        paid_at: p.paid ? new Date().toISOString() : null,
+        paid_by: p.paid ? profileId : null,
+      } as never).eq("id", p.movementId);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["resource_ledger"] });
+      qc.invalidateQueries({ queryKey: key });
+    },
+  });
+
+  // Attribute an existing restock to a supplier (fixes ones recorded without one).
+  const assignSupplier = useMutation({
+    mutationFn: async (p: { movementId: string; supplierId: string }) => {
+      const { error } = await supabase.from("resource_movements")
+        .update({ supplier_id: p.supplierId } as never)
+        .eq("id", p.movementId);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["resource_ledger"] });
+      qc.invalidateQueries({ queryKey: key });
+    },
+  });
+
   return {
     items,
-    addItem: (r: { name: string; category: string; unit: string; opening?: number; note?: string }) => addItem.mutateAsync(r),
-    record: (m: { resourceId: string; delta: number; reason: ResourceMovementRow["reason"]; note?: string }) => record.mutateAsync(m),
+    addItem: (r: { name: string; category: string; unit: string; opening?: number; reorderLevel?: number; note?: string }) => addItem.mutateAsync(r),
+    markPaid: (movementId: string) => setPaid.mutateAsync({ movementId, paid: true }),
+    markUnpaid: (movementId: string) => setPaid.mutateAsync({ movementId, paid: false }),
+    assignSupplier: (movementId: string, supplierId: string) => assignSupplier.mutateAsync({ movementId, supplierId }),
+    updateItem: (r: { id: string; name?: string; category?: string; unit?: string; reorderLevel?: number; supplierId?: string | null }) => updateItem.mutateAsync(r),
+    record: (m: { resourceId: string; delta: number; reason: ResourceMovementRow["reason"]; note?: string; supplierId?: string | null; unitCost?: number | null; paid?: boolean | null }) => record.mutateAsync(m),
     removeItem: (id: string) => removeItem.mutateAsync(id),
+  };
+}
+
+export interface ResourceLedgerRow {
+  id: string;
+  resourceId: string;
+  resourceName: string;
+  category: string;
+  unit: string;
+  deltaQty: number;
+  reason: ResourceMovementRow["reason"];
+  note: string | null;
+  supplierId: string | null;
+  totalCost: number | null;
+  paid: boolean | null;
+  paidAt: string | null;
+  paidBy: string | null;
+  occurredAt: string;
+}
+
+// Full resource movement ledger (capped), used to compute the day's
+// opening/received/used/closing per item AND supplier balances (owed vs paid).
+// One query powers both, keeping egress down.
+export function useResourceLedger(limit = 2000) {
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const key = ["resource_ledger", orgId, branchId, limit];
+  useRoomsRealtime("resource_movements", key);
+
+  const { data: rows = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<ResourceLedgerRow[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("resource_movements")
+        .select("id, resource_id, delta_qty, reason, note, supplier_id, total_cost, paid, paid_at, paid_by, occurred_at, resources(name, category, unit)")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("occurred_at", { ascending: false })
+        .limit(limit);
+      if (error) throw error;
+      return (data ?? []).map((r) => {
+        const res = (r as { resources?: { name?: string; category?: string; unit?: string } }).resources;
+        return {
+          id: r.id as string,
+          resourceId: r.resource_id as string,
+          resourceName: res?.name ?? "—",
+          category: res?.category ?? "other",
+          unit: res?.unit ?? "",
+          deltaQty: Number(r.delta_qty),
+          reason: r.reason as ResourceMovementRow["reason"],
+          note: (r.note as string) ?? null,
+          supplierId: (r.supplier_id as string) ?? null,
+          totalCost: r.total_cost != null ? Number(r.total_cost) : null,
+          paid: r.paid == null ? null : Boolean(r.paid),
+          paidAt: (r.paid_at as string) ?? null,
+          paidBy: (r.paid_by as string) ?? null,
+          occurredAt: r.occurred_at as string,
+        };
+      });
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  return { rows };
+}
+
+// Directory of suppliers who supply the business's resources (housekeeping,
+// kitchen, maintenance…). Branch-scoped like resources themselves.
+export function useResourceSuppliers() {
+  const qc = useQueryClient();
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const key = ["resource_suppliers", orgId, branchId];
+  useRoomsRealtime("resource_suppliers", key);
+
+  const { data: suppliers = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<ResourceSupplier[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("resource_suppliers")
+        .select("id, name, phone, supplies, note")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("name");
+      if (error) throw error;
+      return (data ?? []).map((r) => ({
+        id: r.id as string,
+        name: r.name as string,
+        phone: (r.phone as string) ?? null,
+        supplies: (r.supplies as string) ?? null,
+        note: (r.note as string) ?? null,
+      }));
+    },
+    staleTime: 30_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  const addSupplier = useMutation({
+    mutationFn: async (s: { name: string; phone?: string; supplies?: string; note?: string }) => {
+      const { error } = await supabase.from("resource_suppliers").insert({
+        org_id: orgId, branch_id: branchId, name: s.name, phone: s.phone ?? null, supplies: s.supplies ?? null, note: s.note ?? null,
+      } as never);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  const updateSupplier = useMutation({
+    mutationFn: async (s: { id: string; name: string; phone?: string; supplies?: string; note?: string }) => {
+      const { error } = await supabase.from("resource_suppliers").update({
+        name: s.name, phone: s.phone ?? null, supplies: s.supplies ?? null, note: s.note ?? null,
+      } as never).eq("id", s.id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  const removeSupplier = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("resource_suppliers").delete().eq("id", id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  return {
+    suppliers,
+    addSupplier: (s: { name: string; phone?: string; supplies?: string; note?: string }) => addSupplier.mutateAsync(s),
+    updateSupplier: (s: { id: string; name: string; phone?: string; supplies?: string; note?: string }) => updateSupplier.mutateAsync(s),
+    removeSupplier: (id: string) => removeSupplier.mutateAsync(id),
+  };
+}
+
+// Payments made to resource suppliers — a running account you can settle in any
+// number of instalments (Owed = Σ delivered − Σ payments).
+export function useResourceSupplierPayments() {
+  const qc = useQueryClient();
+  const orgId = getOrgId();
+  const branchId = getBranchId();
+  const profileId = getProfileId();
+  const key = ["resource_supplier_payments", orgId, branchId];
+  useRoomsRealtime("resource_supplier_payments", key);
+
+  const { data: payments = [] } = useQuery({
+    queryKey: key,
+    queryFn: async (): Promise<ResourceSupplierPayment[]> => {
+      if (!orgId || !branchId) return [];
+      const { data, error } = await supabase
+        .from("resource_supplier_payments")
+        .select("id, supplier_id, amount, note, paid_by, paid_at")
+        .eq("org_id", orgId).eq("branch_id", branchId)
+        .order("paid_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map((r) => ({
+        id: r.id as string,
+        supplierId: r.supplier_id as string,
+        amount: Number(r.amount),
+        note: (r.note as string) ?? null,
+        paidBy: (r.paid_by as string) ?? null,
+        paidAt: r.paid_at as string,
+      }));
+    },
+    staleTime: 15_000,
+    enabled: !!orgId && !!branchId,
+  });
+
+  const recordPayment = useMutation({
+    mutationFn: async (p: { supplierId: string; amount: number; note?: string }) => {
+      const { error } = await supabase.from("resource_supplier_payments").insert({
+        org_id: orgId, branch_id: branchId, supplier_id: p.supplierId, amount: p.amount, note: p.note ?? null, paid_by: profileId,
+      } as never);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  const deletePayment = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("resource_supplier_payments").delete().eq("id", id);
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+  });
+
+  return {
+    payments,
+    recordPayment: (p: { supplierId: string; amount: number; note?: string }) => recordPayment.mutateAsync(p),
+    deletePayment: (id: string) => deletePayment.mutateAsync(id),
   };
 }
 

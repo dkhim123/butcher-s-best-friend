@@ -1,17 +1,9 @@
 import { useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Search, Check, Ban } from "lucide-react";
+import { Search, Check, Ban, ChevronRight, Download, Receipt as ReceiptIcon } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -22,9 +14,71 @@ import {
 import { useOrgUsers, useProducts, useSales, useShiftWindow } from "@/lib/butchery-store";
 import { Sale, isCancelled, todayISO } from "@/lib/butchery-types";
 import { useAuth } from "@/contexts/AuthContext";
-import { ksh, qty } from "@/lib/format";
+import { ksh } from "@/lib/format";
+import { downloadCsv } from "@/lib/report-export";
 import { ReceiptDialog } from "./ReceiptDialog";
 import { toast } from "sonner";
+
+// ── Payment "language": forest-green for money-in (cash / M-Pesa / paid credit),
+// slate for neutral rails (card / split), soft crimson ONLY for owed credit. ──
+type PayMeta = { label: string; cls: string };
+const payMeta = (s: Sale): PayMeta => {
+  switch (s.payment) {
+    case "cash":
+      return { label: "CASH", cls: "bg-primary/10 text-primary" };
+    case "mpesa":
+      return {
+        label: "M-PESA",
+        cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+      };
+    case "card":
+      return {
+        label: "CARD",
+        cls: "bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-300",
+      };
+    case "split":
+      return {
+        label: "SPLIT",
+        cls: "bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-300",
+      };
+    case "credit":
+      return s.paid
+        ? { label: "CREDIT ✓", cls: "bg-primary/10 text-primary" }
+        : { label: "CREDIT", cls: "bg-destructive/10 text-destructive" };
+    default:
+      return { label: s.payment.toUpperCase(), cls: "bg-muted text-muted-foreground" };
+  }
+};
+
+const PAY_CHIPS = [
+  { v: "all", label: "All" },
+  { v: "cash", label: "Cash" },
+  { v: "mpesa", label: "M-Pesa" },
+  { v: "card", label: "Card" },
+  { v: "credit", label: "Credit" },
+] as const;
+
+const yesterdayISO = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+};
+
+const dayLabel = (dateISO: string) => {
+  const full = new Date(`${dateISO}T00:00:00`).toLocaleDateString("en-KE", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+  if (dateISO === todayISO()) return `Today · ${full}`;
+  if (dateISO === yesterdayISO()) return `Yesterday · ${full}`;
+  return full;
+};
+
+const timeStr = (s: Sale) =>
+  new Date(s.timestamp).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
 
 export const Transactions = () => {
   const { org, profile, role } = useAuth();
@@ -73,10 +127,11 @@ export const Transactions = () => {
   }, [allSales, useShift, shiftStartMs, lo, hi, pay, search]);
 
   const totals = useMemo(() => {
-    const t = { cash: 0, mpesa: 0, card: 0, credit: 0, all: 0 };
+    const t = { cash: 0, mpesa: 0, card: 0, credit: 0, all: 0, count: 0 };
     rows.forEach((s) => {
       // A cancelled sale is void — it never counts toward the money totals.
       if (isCancelled(s)) return;
+      t.count += 1;
       t.all += s.subtotal;
       if (s.payment === "split" && s.payments?.length) {
         for (const p of s.payments) {
@@ -90,6 +145,45 @@ export const Transactions = () => {
     });
     return t;
   }, [rows]);
+
+  // Human item names for a sale (product name, falling back to a free-text line).
+  const itemNames = useMemo(() => {
+    const byId = new Map(products.map((p) => [p.id, p.name]));
+    return (s: Sale) =>
+      s.items.map((it) => byId.get(it.productId) ?? it.description ?? "—");
+  }, [products]);
+
+  // Group the (already newest-first) rows into day sections for sticky headers.
+  const dayGroups = useMemo(() => {
+    const map = new Map<string, Sale[]>();
+    for (const s of rows) {
+      const arr = map.get(s.date) ?? [];
+      arr.push(s);
+      map.set(s.date, arr);
+    }
+    return [...map.entries()].map(([date, sales]) => ({
+      date,
+      sales,
+      count: sales.length,
+      subtotal: sales.reduce((a, s) => a + (isCancelled(s) ? 0 : s.subtotal), 0),
+    }));
+  }, [rows]);
+
+  const exportCsv = () => {
+    const head = ["Receipt", "Date", "Time", "Items", "Payment", "Reference", "Customer", "Amount", "Status"];
+    const body = rows.map((s) => [
+      s.receiptNo,
+      s.date,
+      timeStr(s),
+      itemNames(s).join("; "),
+      s.payment,
+      s.mpesaRef ?? "",
+      s.customerName ?? "",
+      isCancelled(s) ? 0 : Math.round(s.subtotal),
+      isCancelled(s) ? "cancelled" : s.cancelState === "requested" ? "cancel pending" : "ok",
+    ]);
+    downloadCsv(`transactions_${lo}_${hi}.csv`, [head, ...body]);
+  };
 
   const markPaid = (id: string) => {
     update(id, { paid: true });
@@ -151,180 +245,290 @@ export const Transactions = () => {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Shift vs custom-dates toggle (anchor A). */}
-      {shiftStart && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="inline-flex rounded-full border bg-muted/40 p-0.5 text-sm">
+    <div className="space-y-4">
+      {/* ── Hero: solid forest-green Total, then a slim divided breakdown. ── */}
+      <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_2fr]">
+        <Card className="flex flex-col justify-center bg-primary p-5 text-primary-foreground shadow-elevated">
+          <p className="text-[11px] font-semibold uppercase tracking-wider opacity-80">
+            Total sales
+          </p>
+          <p className="mt-1 text-3xl font-bold tabular-nums leading-none">{ksh(totals.all)}</p>
+          <p className="mt-2 text-xs opacity-80">
+            {totals.count} transaction{totals.count === 1 ? "" : "s"}
+            {useShift && shiftStartLabel ? ` · since ${shiftStartLabel}` : ""}
+          </p>
+        </Card>
+        <Card className="grid grid-cols-2 divide-y divide-border shadow-soft sm:grid-cols-4 sm:divide-x sm:divide-y-0">
+          {(
+            [
+              { label: "Cash", value: totals.cash, danger: false },
+              { label: "M-Pesa", value: totals.mpesa, danger: false },
+              { label: "Card", value: totals.card, danger: false },
+              { label: "Credit", value: totals.credit, danger: true },
+            ] as const
+          ).map((b) => (
+            <div key={b.label} className="flex flex-col justify-center px-4 py-3">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                {b.label}
+              </p>
+              <p
+                className={`mt-0.5 text-lg font-bold tabular-nums ${
+                  b.danger && b.value > 0 ? "text-destructive" : "text-foreground"
+                }`}
+              >
+                {ksh(b.value)}
+              </p>
+            </div>
+          ))}
+        </Card>
+      </div>
+
+      {/* ── Compact sticky toolbar: period · payment chips · dates · search · export. ── */}
+      <div className="sticky top-[81px] z-20 flex flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2 shadow-soft">
+        {useShift && shiftStartLabel && (
+          <span className="mr-1 hidden text-[11px] font-medium text-muted-foreground lg:inline">
+            Shift from {shiftStartLabel}
+          </span>
+        )}
+        {shiftStart && (
+          <div className="inline-flex rounded-lg border bg-muted/40 p-0.5 text-xs">
             {(["shift", "custom"] as const).map((m) => (
               <button
                 key={m}
                 type="button"
                 onClick={() => setPeriod(m)}
-                className={`rounded-full px-3 py-1.5 font-medium transition-colors ${
+                className={`rounded-md px-2.5 py-1.5 font-medium transition-colors ${
                   period === m
                     ? "bg-primary text-primary-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                {m === "shift" ? "This shift" : "Custom dates"}
+                {m === "shift" ? "This shift" : "Custom"}
               </button>
             ))}
           </div>
-          {useShift && shiftStartLabel && (
-            <span className="text-xs text-muted-foreground">Since shift started · {shiftStartLabel}</span>
-          )}
-        </div>
-      )}
+        )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <Stat label="Total" value={totals.all} highlight />
-        <Stat label="Cash" value={totals.cash} />
-        <Stat label="M-Pesa" value={totals.mpesa} />
-        <Stat label="Card" value={totals.card} />
-        <Stat label="Credit" value={totals.credit} danger />
-      </div>
-
-      <Card className="p-4 shadow-soft">
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs">From</Label>
-            <Input type="date" value={from} max={to} disabled={useShift} onChange={(e) => setFrom(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">To</Label>
-            <Input type="date" value={to} min={from} disabled={useShift} onChange={(e) => setTo(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Payment</Label>
-            <Select value={pay} onValueChange={setPay}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="cash">Cash</SelectItem>
-                <SelectItem value="mpesa">M-Pesa</SelectItem>
-                <SelectItem value="credit">Credit</SelectItem>
-                <SelectItem value="split">Split</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Search receipt / customer / ref</Label>
-            <div className="relative">
-              <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                className="pl-9"
-                placeholder="R250420-1001..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      <Card className="overflow-hidden shadow-elevated">
-        {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-12 text-center">
-            No transactions match the filters
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-secondary text-secondary-foreground">
-                <tr>
-                  <th className="text-left p-3 font-semibold">Receipt</th>
-                  <th className="text-left p-3 font-semibold">Time</th>
-                  <th className="text-left p-3 font-semibold">Items</th>
-                  <th className="text-left p-3 font-semibold">Payment</th>
-                  <th className="text-right p-3 font-semibold">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((s) => (
-                  <tr
-                    key={s.id}
-                    onClick={() => setSelected(s)}
-                    className={`border-t hover:bg-muted/40 align-top cursor-pointer ${
-                      isCancelled(s) ? "opacity-55" : ""
-                    }`}
-                  >
-                    <td className="p-3 font-mono text-xs">
-                      {s.receiptNo}
-                      {nameById(s.createdBy) && (
-                        <div className="text-[10px] text-muted-foreground font-sans mt-0.5">
-                          by {nameById(s.createdBy)}
-                        </div>
-                      )}
-                      {isCancelled(s) && (
-                        <Badge variant="destructive" className="mt-1 gap-1 text-[10px] font-sans">
-                          <Ban className="h-2.5 w-2.5" /> Cancelled
-                        </Badge>
-                      )}
-                      {s.cancelState === "requested" && (
-                        <Badge variant="secondary" className="mt-1 gap-1 text-[10px] font-sans">
-                          <Ban className="h-2.5 w-2.5" /> Cancel pending
-                        </Badge>
-                      )}
-                    </td>
-                    <td className="p-3 text-xs">
-                      {new Date(s.timestamp).toLocaleTimeString("en-KE", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </td>
-                    <td className="p-3 text-xs">
-                      {s.items
-                        .map((it, i) => {
-                          const p = products.find((x) => x.id === it.productId);
-                          const label = p?.name ?? it.description ?? "—";
-                          return (
-                            <div key={i}>
-                              <span className="font-medium">{label}</span>{" "}
-                              {p && (
-                                <span className="text-muted-foreground">
-                                  ({qty(it.quantity, it.servingName ?? p.unit ?? "")})
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                    </td>
-                    <td className="p-3">
-                      <Badge
-                        variant={s.payment === "credit" && !s.paid ? "destructive" : "secondary"}
-                      >
-                        {s.payment.toUpperCase()}
-                        {s.payment === "credit" && s.paid && " ✓"}
-                      </Badge>
-                      {s.payment === "credit" && (
-                        <p className="text-[10px] text-muted-foreground mt-1">
-                          {s.customerName}
-                        </p>
-                      )}
-                      {s.payment === "mpesa" && (
-                        <p className="text-[10px] text-muted-foreground mt-1 font-mono">
-                          {s.mpesaRef}
-                        </p>
-                      )}
-                      {s.payment === "split" && (
-                        <p className="text-[10px] text-muted-foreground mt-1">
-                          {(s.payments ?? [])
-                            .map((p) => `${p.method === "cash" ? "Cash" : "M-Pesa"} ${ksh(p.amount)}`)
-                            .join(" + ")}
-                        </p>
-                      )}
-                    </td>
-                    <td className="p-3 text-right font-bold text-primary tabular-nums">
-                      {ksh(s.subtotal)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {!useShift && (
+          <div className="flex items-center gap-1.5">
+            <Input
+              type="date"
+              value={from}
+              max={to}
+              onChange={(e) => setFrom(e.target.value)}
+              className="h-10 w-[9.5rem]"
+            />
+            <span className="text-xs text-muted-foreground">→</span>
+            <Input
+              type="date"
+              value={to}
+              min={from}
+              onChange={(e) => setTo(e.target.value)}
+              className="h-10 w-[9.5rem]"
+            />
           </div>
         )}
-      </Card>
+
+        <div className="flex flex-wrap items-center gap-1">
+          {PAY_CHIPS.map((c) => (
+            <button
+              key={c.v}
+              type="button"
+              onClick={() => setPay(c.v)}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                pay === c.v
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "bg-primary/5 text-muted-foreground hover:bg-primary/10 dark:bg-primary/10"
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="relative min-w-[10rem] flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="h-10 pl-9"
+            placeholder="Search receipt / customer / ref…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-10 shrink-0"
+          onClick={exportCsv}
+          disabled={rows.length === 0}
+        >
+          <Download className="mr-1.5 h-4 w-4" /> Export
+        </Button>
+      </div>
+
+      {/* ── Grouped, ultra-scannable list: table on desktop, cards on mobile. ── */}
+      {rows.length === 0 ? (
+        <Card className="flex flex-col items-center gap-2 py-16 text-center shadow-soft">
+          <ReceiptIcon className="h-8 w-8 text-muted-foreground/50" />
+          <p className="text-sm text-muted-foreground">No transactions match these filters</p>
+        </Card>
+      ) : (
+        <div className="overflow-hidden rounded-xl border shadow-soft">
+          {dayGroups.map((g) => (
+            <section key={g.date} className="border-t first:border-t-0">
+              <div className="flex items-center justify-between gap-3 bg-muted px-4 py-2">
+                <span className="text-xs font-semibold uppercase tracking-wide text-foreground">
+                  {dayLabel(g.date)}
+                </span>
+                <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                  {g.count} · {ksh(g.subtotal)}
+                </span>
+              </div>
+
+              {/* Desktop: fixed-layout table so every day aligns identically. */}
+              <table className="hidden w-full table-fixed text-sm md:table">
+                <colgroup>
+                  <col className="w-[24%]" />
+                  <col className="w-[9%]" />
+                  <col />
+                  <col className="w-[17%]" />
+                  <col className="w-[16%]" />
+                </colgroup>
+                <tbody>
+                  {g.sales.map((s) => {
+                    const cancelled = isCancelled(s);
+                    const names = itemNames(s);
+                    const meta = payMeta(s);
+                    return (
+                      <tr
+                        key={s.id}
+                        onClick={() => setSelected(s)}
+                        className={`group cursor-pointer border-t transition-colors hover:bg-primary/5 ${
+                          cancelled ? "border-l-2 border-l-destructive/40 opacity-60" : ""
+                        }`}
+                      >
+                        <td className="px-4 py-2.5">
+                          <div className="truncate font-mono text-xs font-medium">{s.receiptNo}</div>
+                          <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                            {nameById(s.createdBy) && <span className="truncate">by {nameById(s.createdBy)}</span>}
+                            {cancelled && (
+                              <Badge variant="destructive" className="gap-0.5 px-1 py-0 text-[9px]">
+                                <Ban className="h-2.5 w-2.5" /> Cancelled
+                              </Badge>
+                            )}
+                            {s.cancelState === "requested" && (
+                              <Badge variant="secondary" className="gap-0.5 px-1 py-0 text-[9px]">
+                                <Ban className="h-2.5 w-2.5" /> Pending
+                              </Badge>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-2 py-2.5 text-xs tabular-nums text-muted-foreground">
+                          {timeStr(s)}
+                        </td>
+                        <td className="px-2 py-2.5 text-xs" title={names.join(", ")}>
+                          <span className="block truncate">
+                            <span className="font-medium text-foreground">{names.slice(0, 2).join(", ")}</span>
+                            {names.length > 2 && (
+                              <span className="text-muted-foreground"> +{names.length - 2} more</span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2.5">
+                          <span
+                            className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${meta.cls}`}
+                          >
+                            {meta.label}
+                          </span>
+                          {s.payment === "credit" && s.customerName && (
+                            <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{s.customerName}</p>
+                          )}
+                          {s.payment === "mpesa" && s.mpesaRef && (
+                            <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{s.mpesaRef}</p>
+                          )}
+                          {s.payment === "split" && (
+                            <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                              {(s.payments ?? [])
+                                .map((p) => `${p.method === "cash" ? "Cash" : "M-Pesa"} ${ksh(p.amount)}`)
+                                .join(" + ")}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right">
+                          <span className="inline-flex items-center justify-end gap-1">
+                            <span
+                              className={`font-bold tabular-nums ${
+                                cancelled ? "text-muted-foreground line-through" : "text-primary"
+                              }`}
+                            >
+                              {ksh(s.subtotal)}
+                            </span>
+                            <ChevronRight className="h-4 w-4 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {/* Mobile: stacked cards, no horizontal scroll. */}
+              <div className="divide-y md:hidden">
+                {g.sales.map((s) => {
+                  const cancelled = isCancelled(s);
+                  const names = itemNames(s);
+                  const meta = payMeta(s);
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setSelected(s)}
+                      className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition-colors active:bg-primary/5 ${
+                        cancelled ? "border-l-2 border-l-destructive/40 opacity-60" : ""
+                      }`}
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="truncate font-mono text-xs font-medium">{s.receiptNo}</span>
+                        <span
+                          className={`shrink-0 font-bold tabular-nums ${
+                            cancelled ? "text-muted-foreground line-through" : "text-primary"
+                          }`}
+                        >
+                          {ksh(s.subtotal)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-muted-foreground">
+                          {timeStr(s)}
+                          {nameById(s.createdBy) ? ` · ${nameById(s.createdBy)}` : ""}
+                        </span>
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${meta.cls}`}
+                        >
+                          {meta.label}
+                        </span>
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground" title={names.join(", ")}>
+                        <span className="text-foreground">{names.slice(0, 2).join(", ")}</span>
+                        {names.length > 2 && ` +${names.length - 2} more`}
+                      </div>
+                      {(cancelled || s.cancelState === "requested") && (
+                        <Badge
+                          variant={cancelled ? "destructive" : "secondary"}
+                          className="mt-0.5 w-fit gap-0.5 px-1.5 py-0 text-[9px]"
+                        >
+                          <Ban className="h-2.5 w-2.5" /> {cancelled ? "Cancelled" : "Cancel pending"}
+                        </Badge>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
 
       <Dialog open={!!cancelTarget} onOpenChange={(o) => !o && setCancelTarget(null)}>
         <DialogContent>
@@ -469,32 +673,3 @@ export const Transactions = () => {
     </div>
   );
 };
-
-function Stat({
-  label,
-  value,
-  highlight,
-  danger,
-}: {
-  label: string;
-  value: number;
-  highlight?: boolean;
-  danger?: boolean;
-}) {
-  return (
-    <Card
-      className={`p-4 shadow-soft ${highlight ? "bg-gradient-primary text-primary-foreground" : ""}`}
-    >
-      <p
-        className={`text-[10px] uppercase tracking-wider ${highlight ? "opacity-80" : "text-muted-foreground"}`}
-      >
-        {label}
-      </p>
-      <p
-        className={`text-2xl font-bold ${danger && !highlight ? "text-destructive" : ""}`}
-      >
-        {ksh(value)}
-      </p>
-    </Card>
-  );
-}

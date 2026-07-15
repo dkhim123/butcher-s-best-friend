@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,12 +9,13 @@ import {
   BarChart3,
   TrendingUp,
   AlertCircle,
-  Beef,
   PieChart,
   ChefHat,
   Download,
   Printer,
   BedDouble,
+  Boxes,
+  type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { downloadCsv, printHtml, REPORT_PRINT_CSS } from "@/lib/report-export";
@@ -24,12 +25,21 @@ import {
   useProducts,
   usePurchaseOrders,
   useSales,
-  useSalesByCategory,
-  useTopFoodGroups,
 } from "@/lib/butchery-store";
-import { ACTIVE_DEPARTMENTS, DEPARTMENT_LABELS, FOOD_GROUP_LABELS, FoodGroup, bottleEquivalent, isCancelled, isIngredient, Product, todayISO } from "@/lib/butchery-types";
+import { ACTIVE_DEPARTMENTS, DEPARTMENT_LABELS, DEPARTMENT_SHORT_LABELS, bottleEquivalent, isCancelled, isIngredient, Product, todayISO } from "@/lib/butchery-types";
 import { useActiveDepartment } from "@/contexts/DepartmentContext";
 import { ksh, qty } from "@/lib/format";
+
+type ReportModule = "summary" | "sales" | "stock" | "foodcost";
+
+// The report's mini-modules, shown one at a time from the side rail. "foodcost"
+// is filtered out for departments that don't stock ingredients (e.g. the Bar).
+const REPORT_MODULES: { id: ReportModule; label: string; icon: LucideIcon }[] = [
+  { id: "summary", label: "Overview", icon: BarChart3 },
+  { id: "sales", label: "Sales", icon: PieChart },
+  { id: "stock", label: "Stock movement", icon: Boxes },
+  { id: "foodcost", label: "Food cost", icon: ChefHat },
+];
 
 export const DailyReport = () => {
   const { active: activeDepartment } = useActiveDepartment();
@@ -38,6 +48,10 @@ export const DailyReport = () => {
   // to, say, June 1 → Dec 1 and print/export the whole period.
   const [from, setFrom] = useState<string>(todayISO());
   const [to, setTo] = useState<string>(todayISO());
+  // The report is split into mini-modules (like Inventory's sub-tabs) selected
+  // from a side rail, so only one module shows at a time instead of one long,
+  // crowded scroll. "stock" is the Stock-movement module.
+  const [module, setModule] = useState<ReportModule>("summary");
   // Guard against an inverted range (to before from) so filters never go empty
   // by accident — we always compare with the earlier date first.
   const lo = from <= to ? from : to;
@@ -90,8 +104,6 @@ export const DailyReport = () => {
   // anymore, hence the all-zeros bug in the Opening / Purchased /
   // Available / Remaining columns.
   const { byProductId: dailyStock } = useDailyStockReport(lo, hi);
-  const { rows: byCategory } = useSalesByCategory(lo, hi, activeDepartment);
-  const { rows: byFoodGroup } = useTopFoodGroups(lo, hi, activeDepartment);
 
   const rows = useMemo(() => {
     return products.map((p) => {
@@ -196,6 +208,23 @@ export const DailyReport = () => {
     return t;
   }, [allDaySales]);
 
+  // Revenue split by department, so the headline can follow the Restaurant/Bar
+  // switch AND show both at once. A mixed receipt is split per line item into
+  // its department; product-less lines (room stays) fall under "rooms".
+  const deptRevenue = useMemo(() => {
+    const m: Record<string, number> = { restaurant: 0, bar: 0, rooms: 0 };
+    for (const s of allDaySales) {
+      if (isCancelled(s)) continue;
+      for (const it of s.items) {
+        const p = allProducts.find((x) => x.id === it.productId);
+        const dept = p?.department ?? "rooms";
+        m[dept] = (m[dept] ?? 0) + it.amount;
+      }
+    }
+    return m;
+  }, [allDaySales, allProducts]);
+  const activeRevenue = deptRevenue[activeDepartment] ?? 0;
+
   // Profit only counts products whose buying price is known, so we don't
   // pretend an unknown-cost item is 100% margin. We surface how many items
   // are missing a cost so the owner knows to fill them in.
@@ -206,6 +235,19 @@ export const DailyReport = () => {
   const marginPct = revenueWithCost > 0 ? (grossProfit / revenueWithCost) * 100 : 0;
   const missingCostCount = rows.filter((r) => r.revenue > 0 && r.profit == null).length;
 
+  // Profit-per-item table (department-scoped, so the Bar lists its drinks): only
+  // items that actually moved, most profitable first (unknown-cost rows last).
+  const profitRows = useMemo(
+    () =>
+      rows
+        .filter((r) => r.sold > 0 || r.revenue > 0)
+        .sort(
+          (a, b) =>
+            (b.profit ?? -Infinity) - (a.profit ?? -Infinity) || b.revenue - a.revenue,
+        ),
+    [rows],
+  );
+
   // ── Food cost (kitchen usage vs food sales) ───────────────────────────────
   // The classic restaurant health check. The chef logs how much of each
   // ingredient was used today (Kitchen tab); we cost that usage (used × buying
@@ -213,6 +255,10 @@ export const DailyReport = () => {
   // is the early signal for over-portioning, waste, or theft.
   const { rows: usageRows } = useKitchenUsage(lo, hi);
   const ingredients = useMemo(() => products.filter(isIngredient), [products]);
+  // Food cost only exists where ingredients are stocked; if the department
+  // switches to one without them (the Bar), fall back to the Overview module.
+  const activeModule: ReportModule =
+    module === "foodcost" && ingredients.length === 0 ? "summary" : module;
 
   const usageLines = useMemo(() => {
     return usageRows
@@ -442,39 +488,98 @@ export const DailyReport = () => {
         </div>
       </Card>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <Card className="p-5 shadow-soft bg-gradient-primary text-primary-foreground">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-xs uppercase tracking-wider opacity-80">Total Revenue</p>
+      <div className="grid gap-6 lg:grid-cols-[190px_minmax(0,1fr)]">
+        {/* Side rail of mini-modules (like Inventory's sub-tabs). */}
+        <nav className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+          {REPORT_MODULES.filter((m) => m.id !== "foodcost" || ingredients.length > 0).map((m) => {
+            const on = activeModule === m.id;
+            const Icon = m.icon;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => setModule(m.id)}
+                aria-current={on}
+                className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors lg:w-full ${
+                  on
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="whitespace-nowrap">{m.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Active module's content. */}
+        <div className="min-w-0 space-y-6">
+          {activeModule === "summary" && (
+            <>
+      {/* Revenue — headline follows the Restaurant/Bar switch, with a split so
+          both departments are visible at once. Payment rails stay whole-business. */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(260px,1.1fr)_2fr]">
+        <Card className="flex flex-col justify-center bg-gradient-primary p-5 text-primary-foreground shadow-elevated">
+          <div className="mb-1 flex items-center justify-between">
+            <p className="text-xs uppercase tracking-wider opacity-80">
+              {DEPARTMENT_SHORT_LABELS[activeDepartment]} revenue
+            </p>
             <Wallet className="h-4 w-4 opacity-80" />
           </div>
-          <p className="text-3xl font-bold">{ksh(biz.total)}</p>
-          <p className="text-[10px] opacity-80 mt-1">{biz.count} transactions · whole business</p>
+          <p className="text-3xl font-bold leading-none">{ksh(activeRevenue)}</p>
+          <p className="mt-2 text-[11px] opacity-80">of {ksh(biz.total)} whole business</p>
         </Card>
-        <Card className="p-5 shadow-soft">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Cash</p>
-          <p className="text-2xl font-bold">{ksh(biz.cash)}</p>
-        </Card>
-        <Card className="p-5 shadow-soft">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">M-Pesa</p>
-          <p className="text-2xl font-bold">{ksh(biz.mpesa)}</p>
-        </Card>
-        <Card className="p-5 shadow-soft">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Card</p>
-          <p className="text-2xl font-bold">{ksh(biz.card)}</p>
-        </Card>
-        <Card className={`p-5 shadow-soft ${biz.creditUnpaid > 0 ? "border-destructive/40" : ""}`}>
-          <div className="flex items-center justify-between">
-            <p className="text-xs uppercase tracking-wider text-muted-foreground">Credit</p>
-            {biz.creditUnpaid > 0 && <AlertCircle className="h-4 w-4 text-destructive" />}
-          </div>
-          <p className="text-2xl font-bold">{ksh(biz.credit)}</p>
-          {biz.creditUnpaid > 0 && (
-            <p className="text-[11px] text-destructive font-semibold mt-1">
-              {ksh(biz.creditUnpaid)} unpaid
-            </p>
-          )}
-        </Card>
+
+        <div className="grid gap-4">
+          {/* Both departments at a glance — switch the header toggle to make one
+              of these the headline above. */}
+          <Card className="grid grid-cols-3 divide-x shadow-soft">
+            {(
+              [
+                { key: "restaurant", label: "Restaurant" },
+                { key: "bar", label: "Bar" },
+                { key: "rooms", label: "Rooms" },
+              ] as const
+            )
+              .filter((d) => d.key !== "rooms" || deptRevenue.rooms > 0)
+              .map((d) => (
+                <div
+                  key={d.key}
+                  className={`px-4 py-3 ${
+                    d.key === activeDepartment ? "bg-primary/5" : ""
+                  }`}
+                >
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {d.label}
+                  </p>
+                  <p className="mt-0.5 text-lg font-bold tabular-nums">{ksh(deptRevenue[d.key] ?? 0)}</p>
+                </div>
+              ))}
+          </Card>
+
+          {/* Payment rails (whole business). */}
+          <Card className="grid grid-cols-2 divide-x divide-y shadow-soft sm:grid-cols-4 sm:divide-y-0">
+            {(
+              [
+                { label: "Cash", value: biz.cash, danger: false },
+                { label: "M-Pesa", value: biz.mpesa, danger: false },
+                { label: "Card", value: biz.card, danger: false },
+                { label: "Credit", value: biz.credit, danger: biz.creditUnpaid > 0, sub: biz.creditUnpaid },
+              ] as const
+            ).map((p) => (
+              <div key={p.label} className="px-4 py-3">
+                <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  {p.label}
+                </p>
+                <p className="mt-0.5 text-base font-bold tabular-nums">{ksh(p.value)}</p>
+                {"sub" in p && p.danger && (p.sub ?? 0) > 0 && (
+                  <p className="text-[10px] font-semibold text-destructive">{ksh(p.sub)} unpaid</p>
+                )}
+              </div>
+            ))}
+          </Card>
+        </div>
       </div>
 
       {/* Profitability — revenue minus cost of goods sold, for products that
@@ -527,21 +632,27 @@ export const DailyReport = () => {
           </div>
         )}
       </Card>
+            </>
+          )}
 
-      {/* Food cost — kitchen ingredient usage vs food sales. Only shown for
-          departments that actually stock ingredients (the Restaurant). */}
-      {ingredients.length > 0 && (
-        <Card className="overflow-hidden shadow-soft">
-          <div className="p-4 border-b bg-gradient-surface flex items-center gap-2">
-            <ChefHat className="h-4 w-4 text-primary" />
-            <div>
-              <h3 className="font-semibold">Food cost today</h3>
-              <p className="text-xs text-muted-foreground">
-                Ingredients used (from the Kitchen tab) vs food sales
-              </p>
-            </div>
-          </div>
-
+          {/* Food cost — kitchen ingredient usage vs food sales. Its own module,
+              shown only for departments that stock ingredients (the Restaurant). */}
+          {activeModule === "foodcost" && ingredients.length > 0 && (
+        <ReportSection
+          icon={<ChefHat className="h-4 w-4" />}
+          title="Food cost today"
+          subtitle="Ingredients used (from the Kitchen tab) vs food sales"
+          summary={
+            foodCostPct != null ? (
+              <>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Food cost</p>
+                <p className={`font-bold ${foodCostHealth?.cls}`}>
+                  {foodCostPct.toFixed(0)}% · {foodCostHealth?.label}
+                </p>
+              </>
+            ) : undefined
+          }
+        >
           <div className="grid sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x">
             <div className="p-4">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -647,19 +758,22 @@ export const DailyReport = () => {
               </p>
             </div>
           )}
-        </Card>
+        </ReportSection>
       )}
 
       {/* Room stays — guest bookings billed in this range (own money line). */}
-      {roomLines.length > 0 && (
-        <Card className="overflow-hidden shadow-soft">
-          <div className="p-4 border-b bg-gradient-surface flex items-center gap-2">
-            <BedDouble className="h-4 w-4 text-primary" />
-            <div>
-              <h3 className="font-semibold">Rooms (guest stays)</h3>
-              <p className="text-xs text-muted-foreground">Room income for this period</p>
-            </div>
-          </div>
+      {activeModule === "sales" && roomLines.length > 0 && (
+        <ReportSection
+          icon={<BedDouble className="h-4 w-4" />}
+          title="Rooms (guest stays)"
+          subtitle="Room income for this period"
+          summary={
+            <>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Rooms total</p>
+              <p className="font-bold text-primary">{ksh(roomTotal)}</p>
+            </>
+          }
+        >
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-secondary/60 text-secondary-foreground">
@@ -686,117 +800,111 @@ export const DailyReport = () => {
               </tfoot>
             </table>
           </div>
-        </Card>
+        </ReportSection>
       )}
 
-      {/* Two new senior-dev widgets: "by category" + "by food group" */}
-      <div className="grid lg:grid-cols-2 gap-4">
-        {/* WIDGET 1 — How much beef vs chicken vs goat sold today? */}
-        <Card className="overflow-hidden shadow-soft">
-          <div className="p-4 border-b bg-gradient-surface">
-            <h3 className="font-semibold flex items-center gap-2">
-              <Beef className="h-4 w-4 text-primary" /> Sales by category
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Beef vs chicken vs goat (and everything else)
-            </p>
-          </div>
-          {byCategory.length === 0 ? (
+      {/* Profit per item — buying vs selling, revenue, cost, profit, margin. */}
+      {activeModule === "sales" && (
+        <ReportSection
+          icon={<TrendingUp className="h-4 w-4" />}
+          title="Profit per item"
+          subtitle="Quantity sold, buying vs selling price, revenue, cost, profit and margin"
+          summary={
+            <>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Gross profit</p>
+              <p className={`font-bold ${grossProfit >= 0 ? "text-success" : "text-destructive"}`}>
+                {ksh(grossProfit)} · {marginPct.toFixed(1)}%
+              </p>
+            </>
+          }
+        >
+          {profitRows.length === 0 ? (
             <p className="p-6 text-center text-sm text-muted-foreground">
-              No sales recorded for this date.
+              No items sold for this date.
             </p>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-secondary/60 text-secondary-foreground">
-                <tr>
-                  <th className="text-left p-3 font-semibold">Category</th>
-                  <th className="text-right p-3 font-semibold">Qty sold</th>
-                  <th className="text-right p-3 font-semibold">Revenue</th>
-                </tr>
-              </thead>
-              <tbody>
-                {byCategory.map((r) => (
-                  <tr key={`${r.category}-${r.foodGroup}`} className="border-t hover:bg-muted/40">
-                    <td className="p-3">
-                      <div className="font-medium font-mono">{r.category}</div>
-                      <Badge variant="secondary" className="text-[10px] mt-0.5">
-                        {FOOD_GROUP_LABELS[r.foodGroup as FoodGroup] ?? r.foodGroup}
-                      </Badge>
-                    </td>
-                    <td className="p-3 text-right tabular-nums">
-                      {r.qtySold.toLocaleString("en-KE", { maximumFractionDigits: 3 })}
-                    </td>
-                    <td className="p-3 text-right tabular-nums font-bold text-primary">
-                      {ksh(r.revenue)}
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-secondary/60 text-secondary-foreground">
+                  <tr>
+                    <th className="text-left p-3 font-semibold">Item</th>
+                    <th className="text-right p-3 font-semibold">Qty sold</th>
+                    <th className="text-right p-3 font-semibold">Buying</th>
+                    <th className="text-right p-3 font-semibold">Selling</th>
+                    <th className="text-right p-3 font-semibold">Revenue</th>
+                    <th className="text-right p-3 font-semibold">Cost</th>
+                    <th className="text-right p-3 font-semibold">Profit</th>
+                    <th className="text-right p-3 font-semibold">Margin</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Card>
-
-        {/* WIDGET 2 — Top-selling food group */}
-        <Card className="overflow-hidden shadow-soft">
-          <div className="p-4 border-b bg-gradient-surface">
-            <h3 className="font-semibold flex items-center gap-2">
-              <PieChart className="h-4 w-4 text-primary" /> Top-selling food group
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Meat · meals · drinks · groceries
-            </p>
-          </div>
-          {byFoodGroup.length === 0 ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">
-              No sales recorded for this date.
-            </p>
-          ) : (
-            <div className="p-3 space-y-2">
-              {byFoodGroup.map((r) => (
-                <div key={r.foodGroup} className="rounded-md border p-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold">
-                      {FOOD_GROUP_LABELS[r.foodGroup as FoodGroup] ?? r.foodGroup}
-                    </span>
-                    <span className="font-bold text-primary">{ksh(r.revenue)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-primary transition-all"
-                        style={{ width: `${Math.min(r.sharePct, 100)}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-muted-foreground tabular-nums w-12 text-right">
-                      {r.sharePct.toFixed(1)}%
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground mt-1">
-                    {r.txnCount} item{r.txnCount === 1 ? "" : "s"} sold
-                  </p>
-                </div>
-              ))}
+                </thead>
+                <tbody>
+                  {profitRows.map((r) => {
+                    const margin =
+                      r.profit != null && r.revenue > 0 ? (r.profit / r.revenue) * 100 : null;
+                    const dash = <span className="text-muted-foreground/60">—</span>;
+                    return (
+                      <tr key={r.product.id} className="border-t hover:bg-muted/40">
+                        <td className="p-3 font-medium">{r.product.name}</td>
+                        <td className="p-3 text-right tabular-nums">{qty(r.sold, r.product.unit)}</td>
+                        <td className="p-3 text-right tabular-nums text-muted-foreground">
+                          {r.product.costPrice != null ? ksh(r.product.costPrice) : (
+                            <span className="text-amber-600 text-xs">no cost</span>
+                          )}
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-muted-foreground">
+                          {ksh(r.product.price)}
+                        </td>
+                        <td className="p-3 text-right tabular-nums font-semibold text-primary">
+                          {ksh(r.revenue)}
+                        </td>
+                        <td className="p-3 text-right tabular-nums text-destructive">
+                          {r.cogs != null ? ksh(r.cogs) : dash}
+                        </td>
+                        <td className="p-3 text-right tabular-nums font-semibold">
+                          {r.profit == null ? dash : (
+                            <span className={r.profit >= 0 ? "text-success" : "text-destructive"}>
+                              {ksh(r.profit)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3 text-right tabular-nums">
+                          {margin == null ? dash : `${margin.toFixed(1)}%`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 bg-gradient-surface font-bold">
+                    <td className="p-3" colSpan={4}>Total</td>
+                    <td className="p-3 text-right tabular-nums text-primary">{ksh(totalRevenue)}</td>
+                    <td className="p-3 text-right tabular-nums text-destructive">{ksh(totalCogs)}</td>
+                    <td className="p-3 text-right tabular-nums">
+                      <span className={grossProfit >= 0 ? "text-success" : "text-destructive"}>
+                        {ksh(grossProfit)}
+                      </span>
+                    </td>
+                    <td className="p-3 text-right tabular-nums">{marginPct.toFixed(1)}%</td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
           )}
-        </Card>
-      </div>
+        </ReportSection>
+      )}
 
-      <Card className="overflow-hidden shadow-elevated">
-        <div className="p-4 border-b bg-gradient-surface flex items-center justify-between">
-          <div>
-            <h3 className="font-semibold flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-primary" /> Stock Movement per Product
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Opening + Purchased − Out = Remaining (Out = sold + kitchen usage)
-            </p>
-          </div>
-          <div className="text-right">
-            <p className="text-[10px] uppercase text-muted-foreground">Spent on stock</p>
+      {activeModule === "stock" && (
+      <ReportSection
+        icon={<Boxes className="h-4 w-4" />}
+        title="Stock movement per product"
+        subtitle="Opening + Purchased − Out = Remaining (Out = sold + kitchen usage)"
+        summary={
+          <>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Spent on stock</p>
             <p className="font-bold">{ksh(purchaseSpend)}</p>
-          </div>
-        </div>
-
+          </>
+        }
+      >
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-secondary/60 text-secondary-foreground">
@@ -904,7 +1012,41 @@ export const DailyReport = () => {
             </tfoot>
           </table>
         </div>
-      </Card>
+      </ReportSection>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
+
+// A plain report section: a header (icon · title · subtitle · optional summary
+// value) over its content. The Reports page shows ONE module of these at a time
+// via the side rail, so each section renders directly — no crowding.
+function ReportSection({
+  icon,
+  title,
+  subtitle,
+  summary,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  subtitle?: string;
+  summary?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Card className="overflow-hidden shadow-soft">
+      <div className="flex items-center gap-3 border-b bg-gradient-surface p-4">
+        <span className="text-primary">{icon}</span>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-semibold">{title}</h3>
+          {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
+        </div>
+        {summary && <div className="shrink-0 text-right leading-tight">{summary}</div>}
+      </div>
+      {children}
+    </Card>
+  );
+}
